@@ -1,0 +1,15 @@
+
+{
+  "click_sequence": [
+    "施設の空き状況",
+    "利用目的から",
+    "屋内スポーツ",
+    "バドミントン",
+    "岩槻南部公民館"
+  ],
+  "full_page_screenshot": true,
+  "diff_threshold_pixel": 25,
+  "tile_size": 50,
+  "tile_pixel_threshold": 150,
+  "yellow_alpha": 160
+}
