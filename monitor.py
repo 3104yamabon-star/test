@@ -337,6 +337,7 @@ def extract_status_cells(page, calendar_root, config):
     戻り値：(cells, cal_bbox)
       cells = [{key, status, bbox{x,y,w,h}, text}]
     """
+    print("[INFO] extract_status_cells: start", flush=True)
     patterns = config["status_patterns"]
     debug_top = int(config.get("debug", {}).get("log_top_samples", 10) or 10)
 
