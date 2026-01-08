@@ -371,8 +371,13 @@ cnt = candidates.count()
         except Exception:
             continue
 
-        mday = _re.search(r"([1-9]|[12]\d|3[01])日", txt)
-        day_label = f"{mday.group(0)}" if mday else ""
+        
+mday = _re.search(r"([1-9]|[12]\d|3[01])\s*日", txt)
+if not mday:
+    # '空き状況'など月外テキストだけのセルを除外
+    continue
+day_label = f"{mday.group(0)}"
+
 
         st = _status_from_text(txt)
 
