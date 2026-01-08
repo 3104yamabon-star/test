@@ -497,19 +497,37 @@ def save_latest_state(dirpath: Path, state: dict):
 # --------------------------------------------------------------------------------
 # 月遷移（フォールバック付き）
 # --------------------------------------------------------------------------------
-def click_next_month(page, label_primary="翌月"):
+
+def click_next_month(page, label_primary="翌月", calendar_root=None):
     """
-    「翌月」クリックの表記揺れ・画像ボタン・aria/title・プルダウン選択までフォールバック
+    翌月遷移を強化：
+      - カレンダー「ヘッダ」領域にスコープを絞って検索
+      - 文字候補が複数ある場合は .first で一意にクリック
+      - プルダウン（月セレクタ）が存在する場合は次月へ変更するフォールバック
     """
+    scope = (calendar_root.locator("thead, .calendar-header, .fc-toolbar, nav").first
+             if calendar_root else page)
+
     # 1) テキスト／ボタン／リンク（厳密一致＋近似）
     for cand in [label_primary, "次月", "次へ", "＞", ">>", "次月へ", "翌月へ"]:
-        if try_click_text(page, cand, timeout_ms=3000):
+        # scope 内で検索し、複数ヒット時は first をクリック
+        try:
+            scope.get_by_role("button", name=cand, exact=True).first.click(timeout=2000)
+            page.wait_for_load_state("networkidle", timeout=30000)
             return True
+        except Exception:
+            pass
+        try:
+            scope.get_by_text(cand, exact=True).first.click(timeout=2000)
+            page.wait_for_load_state("networkidle", timeout=30000)
+            return True
+        except Exception:
+            pass
 
     # 2) aria-label / title をもつ要素を総当り
-    for cand in [label_primary, "次月", "次へ"]:
+    for cand in [label_primary, "次月", "次へ", "翌月"]:
         for sel in ["[aria-label]", "[title]"]:
-            loc = page.locator(sel)
+            loc = scope.locator(sel)
             cnt = loc.count()
             for i in range(cnt):
                 el = loc.nth(i)
@@ -524,9 +542,39 @@ def click_next_month(page, label_primary="翌月"):
                         pass
 
     # 3) 画像ボタン（img alt/src に翌月キーワード）
-    imgs = page.locator("img")
+    imgs = scope.locator("img")
     icnt = imgs.count()
+    for i in range(icnt):
+        el = imgs.nth(i)
+        alt = el.get_attribute("alt") or ""
+        src = el.get_attribute("src") or ""
+        if any(k in (alt + " " + src) for k in [label_primary, "次月", "次へ", "翌月"]):
+            try:
+                el.click(timeout=3000)
+                page.wait_for_load_state("networkidle", timeout=30000)
+                return True
+            except Exception:
+                pass
 
+    # 4) プルダウン（月セレクタ）で次月へ切り替え（存在する場合）
+    try:
+        selects = scope.locator("select")
+        scnt = selects.count()
+        for si in range(scnt):
+            sel = selects.nth(si)
+            # 現在の選択肢から「翌月 / 次月」を含む option を選択
+            opts = sel.locator("option")
+            ocnt = opts.count()
+            for oi in range(ocnt):
+                txt = (opts.nth(oi).inner_text() or "").strip()
+                if any(k in txt for k in [label_primary, "次月", "翌月"]):
+                    sel.select_option(value=opts.nth(oi).get_attribute("value"))
+                    page.wait_for_load_state("networkidle", timeout=30000)
+                    return True
+    except Exception:
+        pass
+
+    return False
 
 # --------------------------------------------------------------------------------
 # メイン処理（施設→当月/翌月の検出とスナップショット保存）
