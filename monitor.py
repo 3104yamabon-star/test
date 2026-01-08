@@ -87,14 +87,31 @@ def is_within_monitoring_window(start_hour=5, end_hour=23):
 # Playwright 操作（遷移）
 # --------------------------------------------------------------------------------
 
+
 def try_click_text(page, label, timeout_ms=15000, quiet=True):
-    ...
-    except Exception as e:
-        # ダイアログ不在は通常ケースなので、デフォルトは静かにスキップ
-        if not quiet:
-            print(f"[WARN] try_click_text: 例外 {e}", flush=True)
-        continue
+    """
+    指定ラベルのリンク／ボタン／テキストをクリック。
+    厳密一致を優先しつつ、フォールバックで text= を使う。
+    quiet=True のとき、見つからない・待機タイムアウトでも WARN を出さない（通常ケースのノイズ抑制）。
+    """
+    locators = [
+        page.get_by_role("link", name=label, exact=True),
+        page.get_by_role("button", name=label, exact=True),
+        page.get_by_text(label, exact=True),
+        page.locator(f"text={label}"),
+    ]
+    for locator in locators:
+        try:
+            locator.wait_for(timeout=timeout_ms)
+            locator.click(timeout=timeout_ms)
+            page.wait_for_load_state("networkidle", timeout=30000)
+            return True
+        except Exception as e:
+            if not quiet:
+                print(f"[WARN] try_click_text: 例外 {e}（label='{label}'）", flush=True)
+            continue
     return False
+
 
 
 
