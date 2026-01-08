@@ -526,3 +526,79 @@ def click_next_month(page, label_primary="翌月"):
     # 3) 画像ボタン（img alt/src に翌月キーワード）
     imgs = page.locator("img")
     icnt = imgs.count()
+
+
+# --------------------------------------------------------------------------------
+# メイン処理（施設→当月/翌月の検出とスナップショット保存）
+# --------------------------------------------------------------------------------
+
+def run_monitor():
+    print("[INFO] run_monitor: start", flush=True)
+    ensure_dirs()
+    try:
+        config = load_config()
+    except Exception as e:
+        print(f"[ERROR] config load failed: {e}", flush=True)
+        return
+
+    facilities = config.get("facilities", [])
+    if not facilities:
+        print("[WARN] config['facilities'] が空です。何も処理できません。", flush=True)
+        return
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
+        for facility in facilities:
+            try:
+                print(f"[INFO] navigate_to_facility: {facility.get('name','unknown')}", flush=True)
+                navigate_to_facility(page, facility)
+                month_text = get_current_year_month_text(page) or "unknown"
+                print(f"[INFO] current month: {month_text}", flush=True)
+
+                # 当月
+                calendar_root = locate_calendar_root(page, month_text or "予約カレンダー")
+                try:
+                    bbox = calendar_root.bounding_box() or {"width": None, "height": None}
+                except Exception:
+                    bbox = {"width": None, "height": None}
+                print(f"[INFO] calendar_root acquired: bbox={bbox}", flush=True)
+                print("[INFO] about to call extract_status_cells", flush=True)
+                cells, cal_bbox = extract_status_cells(page, calendar_root, config)
+
+                # スナップショット保存
+                fshort = FACILITY_TITLE_ALIAS.get(facility.get('name',''), facility.get('name',''))
+                outdir = facility_month_dir(fshort or 'unknown_facility', month_text)
+                dump_calendar_html(calendar_root, outdir / 'calendar.html')
+                shot = outdir / 'calendar.png'
+                take_calendar_screenshot(calendar_root, shot)
+
+                # 翌月
+                if click_next_month(page):
+                    next_month_text = get_current_year_month_text(page) or "unknown"
+                    print(f"[INFO] next month: {next_month_text}", flush=True)
+                    calendar_root2 = locate_calendar_root(page, next_month_text or "予約カレンダー")
+                    try:
+                        bbox2 = calendar_root2.bounding_box() or {"width": None, "height": None}
+                    except Exception:
+                        bbox2 = {"width": None, "height": None}
+                    print(f"[INFO] calendar_root(next) acquired: bbox={bbox2}", flush=True)
+                    print("[INFO] about to call extract_status_cells (next)", flush=True)
+                    cells2, cal_bbox2 = extract_status_cells(page, calendar_root2, config)
+                    dump_calendar_html(calendar_root2, outdir / 'calendar_next.html')
+                    shot2 = outdir / 'calendar_next.png'
+                    take_calendar_screenshot(calendar_root2, shot2)
+
+            except Exception as e:
+                print(f"[WARN] run_monitor: facility処理中に例外: {e}", flush=True)
+                continue
+        browser.close()
+
+
+if __name__ == "__main__":
+    # 監視時間帯フィルタ（念のため）
+    if not is_within_monitoring_window():
+        print("[INFO] outside monitoring window. exit.", flush=True)
+    else:
+        run_monitor()
