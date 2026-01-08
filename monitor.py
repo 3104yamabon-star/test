@@ -447,6 +447,26 @@ def run_monitor():
                 take_calendar_screenshot(cal_root, outdir / 'calendar.png')
                 print(f"[INFO] saved: {facility.get('name','')} - {month_text}", flush=True)
 
+
+# ★ 追加：空き状況の集計＆保存
+summary, details = summarize_vacancies(page, cal_root, config)
+# JSON 出力
+(outdir / "status_counts.json").write_text(
+    json.dumps({"month": month_text, "facility": facility.get('name',''), "summary": summary, "details": details},
+               ensure_ascii=False, indent=2),
+    "utf-8"
+)
+# CSV（簡易）
+import csv
+with (outdir / "status_details.csv").open("w", newline="", encoding="utf-8") as fcsv:
+    w = csv.writer(fcsv)
+    w.writerow(["day", "status", "text"])
+    for row in details:
+        w.writerow([row["day"], row["status"], row["text"]])
+
+print(f"[INFO] summary({facility.get('name','')} - {month_text}): ○={summary['○']} △={summary['△']} ×={summary['×']} 未判定={summary['未判定']}", flush=True)
+
+              
                 # 「次の月」を連続クリック → 各月キャプチャ（高速化本体）
                 max_shift = max(shifts)
                 next_label = config.get("next_month_label", "次の月")
