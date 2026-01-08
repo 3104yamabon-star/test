@@ -1,49 +1,122 @@
-
 {
   "facilities": [
     {
       "name": "南浦和コミュニティセンター",
-      "click_sequence": ["施設の空き状況", "利用目的から", "屋内スポーツ", "バドミントン", "南浦和コミュニティセンター"],
-      "month_shifts": [0, 1, 2, 3]
+      "click_sequence": [
+        "施設の空き状況",
+        "利用目的から",
+        "屋内スポーツ",
+        "バドミントン",
+        "南浦和コミュニティセンター"
+      ],
+      "month_shifts": [
+        0,
+        1,
+        2,
+        3
+      ]
     },
     {
       "name": "岩槻南部公民館",
-      "click_sequence": ["施設の空き状況", "利用目的から", "屋内スポーツ", "バドミントン", "岩槻南部公民館"],
-      "month_shifts": [0, 1, 2, 3]
+      "click_sequence": [
+        "施設の空き状況",
+        "利用目的から",
+        "屋内スポーツ",
+        "バドミントン",
+        "岩槻南部公民館"
+      ],
+      "month_shifts": [
+        0,
+        1,
+        2,
+        3
+      ]
     },
     {
       "name": "岸町公民館",
-      "click_sequence": ["施設の空き状況", "利用目的から", "屋内スポーツ", "バドミントン", "岸町公民館"],
-      "month_shifts": [0, 1]
+      "click_sequence": [
+        "施設の空き状況",
+        "利用目的から",
+        "屋内スポーツ",
+        "バドミントン",
+        "岸町公民館"
+      ],
+      "month_shifts": [
+        0,
+        1
+      ]
     },
     {
       "name": "鈴谷公民館",
-      "click_sequence": ["施設の空き状況", "利用目的から", "屋内スポーツ", "バドミントン", "鈴谷公民館", "すべて"],
-      "month_shifts": [0, 1]
+      "click_sequence": [
+        "施設の空き状況",
+        "利用目的から",
+        "屋内スポーツ",
+        "バドミントン",
+        "鈴谷公民館",
+        "すべて"
+      ],
+      "month_shifts": [
+        0,
+        1
+      ]
     }
   ],
-
   "next_month_label": "翌月",
-
   "calendar_root_hint": "空き状況",
-
   "status_patterns": {
-    "circle": ["maru", "circle", "○", "〇"],
-    "triangle": ["partial", "few", "△"],
-    "cross": ["ng", "batsu", "cross", "×", "full"]
+    "circle": [
+      "maru",
+      "circle",
+      "○",
+      "〇",
+      "available",
+      "vacant",
+      "free"
+    ],
+    "triangle": [
+      "partial",
+      "few",
+      "△",
+      "warning",
+      "limited"
+    ],
+    "cross": [
+      "ng",
+      "batsu",
+      "×",
+      "unavailable",
+      "full",
+      "closed"
+    ]
   },
-
   "css_class_patterns": {
-    "circle": ["status-ok", "ok", "vacant", "maru", "available"],
-    "triangle": ["status-partial", "partial", "few", "warning", "△"],
-    "cross": ["status-ng", "full", "unavailable", "batsu", "×", "no"]
+    "circle": [
+      "status-ok",
+      "ok",
+      "vacant",
+      "maru",
+      "available"
+    ],
+    "triangle": [
+      "status-partial",
+      "partial",
+      "few",
+      "warning",
+      "△"
+    ],
+    "cross": [
+      "status-ng",
+      "full",
+      "unavailable",
+      "batsu",
+      "×"
+    ]
   },
-
   "debug": {
     "dump_calendar_html": true,
     "log_top_samples": 10
   },
-
   "highlight_alpha": 160,
   "highlight_border_width": 3
 }
