@@ -355,8 +355,13 @@ def summarize_vacancies(page, calendar_root, config):
                 return "×"
         return None
 
-    candidates = calendar_root.locator("td, [role='gridcell'], .fc-daygrid-day, .calendar-day, .day")
-    cnt = candidates.count()
+    
+candidates = calendar_root.locator(
+    ":scope td, :scope [role='gridcell'], :scope .fc-daygrid-day, :scope .calendar-day"
+)
+cnt = candidates.count()
+# 'div'や汎用'.day'は外す（誤検出防止）
+
     import re as _re
 
     for i in range(cnt):
