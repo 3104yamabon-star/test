@@ -436,10 +436,15 @@ if not s:
     for c in cells:
         summary[c["status"]] += 1
     print(f"[DEBUG] status counts: ○={summary['○']} △={summary['△']} ×={summary['×']}", flush=True)
-    if samples:
-        print("[DEBUG] top samples:", flush=True)
-        for s in samples:
-            print(f"  - {s['status']} | {s['text'][:60]} | bbox={s['bbox']}", flush=True)
+if samples:
+    print("[DEBUG] top samples:", flush=True)
+    for s in samples:
+        if s['status'] == '-':
+            print(f" - 未検出  text='{s['text'][:60]}' cls='{s.get('cls','')}' "
+                  f"bg='{s.get('bg','')}' imgs={s.get('img_cnt',0)} src0='{s.get('img_src0','')}' "
+                  f"bbox={s['bbox']}", flush=True)
+        else:
+            print(f" - {s['status']} text='{s['text'][:60]}' bbox={s['bbox']}", flush=True)
 
     return cells, cal_bbox
 
