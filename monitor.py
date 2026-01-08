@@ -369,14 +369,16 @@ def looks_like_day_cell(base):
     except Exception:
         pass
     return False
+
 def extract_status_cells(page, calendar_root, config):
     """
     カレンダー内のセル（tbody td / gridcell）を広く走査し、ステータスを判定。
     ヘッダ・大見出しを looks_like_day_cell で除外。
     戻り値：(cells, cal_bbox)
-      cells = [{key, status, bbox{x,y,w,h}, text}]
+    cells = [{key, status, bbox{x,y,w,h}, text}]
     """
     print("[INFO] extract_status_cells: start", flush=True)
+
     patterns = config["status_patterns"]
     debug_top = int(config.get("debug", {}).get("log_top_samples", 10) or 10)
 
@@ -385,7 +387,6 @@ def extract_status_cells(page, calendar_root, config):
 
     cells, samples = [], []
 
-    
     # 候補拡張：divベースや日付グリッド系にも対応（FullCalendar等）
     candidates = calendar_root.locator("td, [role='gridcell'], .fc-daygrid-day, .calendar-day, .day")
     cnt = candidates.count()
@@ -393,7 +394,6 @@ def extract_status_cells(page, calendar_root, config):
 
     for i in range(cnt):
         base = candidates.nth(i)
-
         # 実セル判定（ヘッダ・空セルは弾く）
         if not looks_like_day_cell(base):
             continue
@@ -407,6 +407,7 @@ def extract_status_cells(page, calendar_root, config):
             rel_y = max(0, bbox["y"] - cal_y)
             txt = (base.inner_text() or "").strip()
 
+            # --- 検知経路（1～4） ---
             # 1) テキスト（直記号優先）
             s = status_from_text(txt, patterns)
 
@@ -423,35 +424,40 @@ def extract_status_cells(page, calendar_root, config):
             if not s:
                 s = status_from_aria(base, patterns)
 
-            # 4) CSS背景／クラス
+            # 4) CSS背景／クラス／疑似要素／子要素（status_from_css 側で拡張）
             if not s:
                 s = status_from_css(base, page, config)
 
+            # --- 未検出サンプル（観察強化用） ---
+            if not s:
+                if len(samples) < debug_top:
+                    try:
+                        cls = (base.get_attribute("class") or "").lower()
+                    except Exception:
+                        cls = ""
+                    try:
+                        bg = base.evaluate("e => getComputedStyle(e).backgroundImage") or ""
+                    except Exception:
+                        bg = ""
+                    try:
+                        imgs = base.locator("img")
+                        jcnt = imgs.count()
+                        src0 = imgs.nth(0).get_attribute("src") if jcnt > 0 else ""
+                    except Exception:
+                        jcnt, src0 = 0, ""
+                    samples.append({
+                        "status": "-",
+                        "text": txt[:120],
+                        "cls": cls[:80],
+                        "bg": bg[:120],
+                        "img_cnt": jcnt,
+                        "img_src0": (src0 or "")[:120],
+                        "bbox": [int(rel_x), int(rel_y), int(bbox["width"]), int(bbox["height"])]
+                    })
+                # 誤検出防止のため未検出はスキップ
+                continue
 
-if not s:
-    # 未検出サンプルをログに出す（上位10件）
-    if len(samples) < 10:
-        try:
-            cls = (base.get_attribute("class") or "").lower()
-            bg  = base.evaluate("e => getComputedStyle(e).backgroundImage") or ""
-            # 子要素のimg数・代表src
-            imgs = base.locator("img")
-            jcnt = imgs.count()
-            src0 = imgs.nth(0).get_attribute("src") if jcnt > 0 else ""
-            samples.append({
-                "status": "-",
-                "text": (base.inner_text() or "")[:120],
-                "cls": cls[:80],
-                "bg": bg[:120],
-                "img_cnt": jcnt,
-                "img_src0": (src0 or "")[:120],
-                "bbox": [int(rel_x), int(rel_y), int(bbox["width"]), int(bbox["height"])]
-            })
-        except Exception:
-            pass
-    continue
-
-
+            # --- 検出済みセルの格納 ---
             key = f"{int(rel_x/10)}-{int(rel_y/10)}:{txt[:40]}"
             cells.append({
                 "key": key,
@@ -460,32 +466,43 @@ if not s:
                 "text": txt
             })
 
+            # 検出サンプル（上位のみ）
             if len(samples) < debug_top:
                 samples.append({
                     "status": s,
                     "text": txt,
                     "bbox": [int(rel_x), int(rel_y), int(bbox["width"]), int(bbox["height"])]
                 })
+
         except Exception as e:
             print(f"[WARN] extract_status_cells: 例外 {e}", flush=True)
             continue
 
-    # デバッグ出力
+    # --- デバッグ出力（サマリ＋サンプル） ---
     summary = {"○": 0, "△": 0, "×": 0}
     for c in cells:
         summary[c["status"]] += 1
     print(f"[DEBUG] status counts: ○={summary['○']} △={summary['△']} ×={summary['×']}", flush=True)
-if samples:
-    print("[DEBUG] top samples:", flush=True)
-    for s in samples:
-        if s['status'] == '-':
-            print(f" - 未検出  text='{s['text'][:60]}' cls='{s.get('cls','')}' "
-                  f"bg='{s.get('bg','')}' imgs={s.get('img_cnt',0)} src0='{s.get('img_src0','')}' "
-                  f"bbox={s['bbox']}", flush=True)
-        else:
-            print(f" - {s['status']} text='{s['text'][:60]}' bbox={s['bbox']}", flush=True)
+
+    if samples:
+        print("[DEBUG] top samples:", flush=True)
+        for s in samples:
+            if s.get("status") == "-":
+                print(
+                    f" - 未検出  text='{s['text'][:60]}' "
+                    f"cls='{s.get('cls','')}' bg='{s.get('bg','')}' "
+                    f"imgs={s.get('img_cnt',0)} src0='{s.get('img_src0','')}' "
+                    f"bbox={s['bbox']}",
+                    flush=True
+                )
+            else:
+                print(
+                    f" - {s['status']} text='{s['text'][:60]}' bbox={s['bbox']}",
+                    flush=True
+                )
 
     return cells, cal_bbox
+
 
 
 # --------------------------------------------------------------------------------
