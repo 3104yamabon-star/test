@@ -35,12 +35,6 @@ jobs:
       # Browserインストールも不要！
       # install-deps も不要！
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
