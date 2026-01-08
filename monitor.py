@@ -501,6 +501,24 @@ print(f"[INFO] summary({facility.get('name','')} - {month_text}): ○={summary['
                         take_calendar_screenshot(cal_root2, outdir2 / 'calendar.png')
                         print(f"[INFO] saved: {facility.get('name','')} - {month_text2}", flush=True)
 
+
+# ★ 追加：空き状況の集計＆保存
+summary2, details2 = summarize_vacancies(page, cal_root2, config)
+(outdir2 / "status_counts.json").write_text(
+    json.dumps({"month": month_text2, "facility": facility.get('name',''), "summary": summary2, "details": details2},
+               ensure_ascii=False, indent=2),
+    "utf-8"
+)
+import csv
+with (outdir2 / "status_details.csv").open("w", newline="", encoding="utf-8") as fcsv:
+    w = csv.writer(fcsv)
+    w.writerow(["day", "status", "text"])
+    for row in details2:
+        w.writerow([row["day"], row["status"], row["text"]])
+
+print(f"[INFO] summary({facility.get('name','')} - {month_text2}): ○={summary2['○']} △={summary2['△']} ×={summary2['×']} 未判定={summary2['未判定']}", flush=True)
+
+                  
                     # 次ループの基準
                     cal_root = cal_root2
                     prev_month_text = month_text2
