@@ -22,7 +22,6 @@
   - next_month_label: "次の月"（サイトUIの表記に合わせる）
   - status_patterns / css_class_patterns / debug など
 """
-
 import os
 import sys
 import json
@@ -181,41 +180,119 @@ def take_calendar_screenshot(calendar_root, out_path):
     calendar_root.screenshot(path=str(out_path))
 
 # --------------------------------------------------------------------------------
-# ステータス認識（×/△/○/〇）
+# 月遷移（フォールバック付き）
 # --------------------------------------------------------------------------------
-def status_from_text(raw_text, patterns):
+def click_next_month(page, label_primary="次の月", calendar_root=None):
     """
-    テキストからステータスを判断（直書き記号＋限定語彙優先）
+    翌月遷移を強化：
+    - カレンダー「ヘッダ」領域にスコープを絞って検索
+    - 文字候補が複数ある場合は .first で一意にクリック
     """
-    txt = (raw_text or "").strip()
-    # 全角スペース→半角、全体を小文字化（限定語彙の誤検知防止のため置換は最小限）
-    txt_norm = txt.replace("　", " ").lower()
+    scope = (calendar_root.locator("thead, .calendar-header, .fc-toolbar, nav").first
+             if calendar_root else page)
+    for cand in [label_primary, "次の月", "次月", "次へ", "＞", ">>", "次月へ", "翌月へ"]:
+        try:
+            scope.get_by_role("button", name=cand, exact=True).first.click(timeout=2000)
+            page.wait_for_load_state("networkidle", timeout=30000)
+            return True
+        except Exception:
+            pass
+        try:
+            scope.get_by_text(cand, exact=True).first.click(timeout=2000)
+            page.wait_for_load_state("networkidle", timeout=30000)
+            return True
+        except Exception:
+            pass
+    return False
 
-    # 直書き記号（全角記号の揺れ対応）
-    for ch in ["○", "〇", "△", "×"]:
-        if ch in txt:
-            return ch
+# --------------------------------------------------------------------------------
+# 施設→当月/翌月/…の検出とスナップショット保存
+# --------------------------------------------------------------------------------
+def run_monitor():
+    print("[INFO] run_monitor: start", flush=True)
+    ensure_dirs()
+    try:
+        config = load_config()
+    except Exception as e:
+        print(f"[ERROR] config load failed: {e}", flush=True)
+        return
 
-    # 文字化された確定語（config.json 側の patterns を優先してチェック）
-    for kw in patterns["circle"]:
-        if kw.lower() in txt_norm:
-            return "○"
-    for kw in patterns["triangle"]:
-        if kw.lower() in txt_norm:
-            return "△"
-    for kw in patterns["cross"]:
-        if kw.lower() in txt_norm:
-            return "×"
+    facilities = config.get("facilities", [])
+    if not facilities:
+        print("[WARN] config['facilities'] が空です。何も処理できません。", flush=True)
+        return
 
-    return None
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
 
-def status_from_img(el, patterns):
-    """<img> の alt/title/src からの判定（ログ出力あり）"""
-    alt = el.get_attribute("alt") or ""
-    title = el.get_attribute("title") or ""
-    src = el.get_attribute("src") or ""
-    s = status_from_text(alt + " " + title, patterns)
-    if s:
-        print(f"[DEBUG] status_from_img: alt/titleで検出 status='{s}' alt='{alt[:40]}' title='{title[:40]}'", flush=True)
-        return s
-    s = status_from_text(src, patterns)
+        for facility in facilities:
+            try:
+                print(f"[INFO] navigate_to_facility: {facility.get('name','unknown')}", flush=True)
+                navigate_to_facility(page, facility)
+
+                # 施設ごとの監視対象（月シフト）
+                shifts = facility.get("month_shifts", [0, 1])
+                shifts = sorted(set(int(s) for s in shifts if isinstance(s, (int, float))))
+                if 0 not in shifts:
+                    shifts.insert(0, 0)
+
+                # 当月
+                month_text = get_current_year_month_text(page) or "unknown"
+                print(f"[INFO] current month: {month_text}", flush=True)
+                cal_root = locate_calendar_root(page, month_text or "予約カレンダー")
+
+                # 保存（当月）
+                fshort = FACILITY_TITLE_ALIAS.get(facility.get('name',''), facility.get('name',''))
+                outdir = facility_month_dir(fshort or 'unknown_facility', month_text)
+                dump_calendar_html(cal_root, outdir / 'calendar.html')
+                take_calendar_screenshot(cal_root, outdir / 'calendar.png')
+                print(f"[INFO] saved: {facility.get('name','')} - {month_text}", flush=True)
+
+                # 以降、最大シフトまで「次の月」を順にクリック
+                max_shift = max(shifts)
+                next_label = config.get("next_month_label", "次の月")
+                for step in range(1, max_shift + 1):
+                    ok = click_next_month(page, label_primary=next_label, calendar_root=cal_root)
+                    if not ok:
+                        print(f"[WARN] next-month click failed at step={step}", flush=True)
+                        break
+                    month_text2 = get_current_year_month_text(page) or f"shift_{step}"
+                    print(f"[INFO] month(step={step}): {month_text2}", flush=True)
+                    cal_root2 = locate_calendar_root(page, month_text2 or "予約カレンダー")
+
+                    # この step が監視対象なら保存
+                    if step in shifts:
+                        outdir2 = facility_month_dir(fshort or 'unknown_facility', month_text2)
+                        dump_calendar_html(cal_root2, outdir2 / 'calendar.html')
+                        take_calendar_screenshot(cal_root2, outdir2 / 'calendar.png')
+                        print(f"[INFO] saved: {facility.get('name','')} - {month_text2}", flush=True)
+
+                    # 次ループの基準
+                    cal_root = cal_root2
+
+            except Exception as e:
+                print(f"[WARN] run_monitor: facility処理中に例外: {e}", flush=True)
+                continue
+
+        browser.close()
+
+# --------------------------------------------------------------------------------
+# 状態保存（施設×年月）
+# --------------------------------------------------------------------------------
+def facility_month_dir(f_short, month_text):
+    safe_fac = re.sub(r"[\\/:*?\"<>|]+", "_", f_short)
+    safe_month = re.sub(r"[\\/:*?\"<>|]+", "_", month_text or "unknown_month")
+    d = SNAP_DIR / safe_fac / safe_month
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+# --------------------------------------------------------------------------------
+# エントリポイント
+# --------------------------------------------------------------------------------
+if __name__ == "__main__":
+    if not is_within_monitoring_window():
+        print("[INFO] outside monitoring window. exit.", flush=True)
+    else:
+        run_monitor()
