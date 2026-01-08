@@ -370,6 +370,7 @@ def looks_like_day_cell(base):
         pass
     return False
 
+
 def extract_status_cells(page, calendar_root, config):
     """
     カレンダー内のセル（tbody td / gridcell）を広く走査し、ステータスを判定。
@@ -484,28 +485,27 @@ def extract_status_cells(page, calendar_root, config):
         summary[c["status"]] += 1
     print(f"[DEBUG] status counts: ○={summary['○']} △={summary['△']} ×={summary['×']}", flush=True)
 
-    
-print("[DEBUG] top samples:", flush=True)
-if not samples:
-    print(" - (no samples captured)", flush=True)
-else:
-    for s in samples:
-        if s.get("status") == "-":
-            print(
-                f" - 未検出  text='{s['text'][:60]}' "
-                f"cls='{s.get('cls','')}' bg='{s.get('bg','')}' "
-                f"imgs={s.get('img_cnt',0)} src0='{s.get('img_src0','')}' "
-                f"bbox={s['bbox']}",
-                flush=True
-            )
-        else:
-            print(
-                f" - {s['status']} text='{s['text'][:60]}' bbox={s['bbox']}",
-                flush=True
-            )
-
+    print("[DEBUG] top samples:", flush=True)
+    if not samples:
+        print(" - (no samples captured)", flush=True)
+    else:
+        for s in samples:
+            if s.get("status") == "-":
+                print(
+                    f" - 未検出  text='{s['text'][:60]}' "
+                    f"cls='{s.get('cls','')}' bg='{s.get('bg','')}' "
+                    f"imgs={s.get('img_cnt',0)} src0='{s.get('img_src0','')}' "
+                    f"bbox={s['bbox']}",
+                    flush=True
+                )
+            else:
+                print(
+                    f" - {s['status']} text='{s['text'][:60]}' bbox={s['bbox']}",
+                    flush=True
+                )
 
     return cells, cal_bbox
+
 
 
 
