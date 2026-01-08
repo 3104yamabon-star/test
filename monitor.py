@@ -1,13 +1,14 @@
-
 # -*- coding: utf-8 -*-
 """
 さいたま市 施設予約システムの空き状況監視（改善のみ通知）
 - .jsp 直リンク禁止のため毎回トップからクリック遷移
 - 施設×月を巡回し、×→△/○、△→○ の「改善」だけ検知
 - 改善セルは黄色ハイライトで強調した画像を Discord に投稿（タイトル：施設短縮名+月番号）
-- 認識ロジック：テキスト／img属性／ARIA／CSS背景画像／CSSクラス（多段検知）
-- デバッグ：カレンダー HTML を保存（snapshots/.../calendar.html）
-- 進捗ログ（②対応）：施設到達・月ごとの抽出開始を明示ログ出力
+- 認識ロジック：テキスト直記号／img属性／ARIA／CSS背景画像／CSSクラス（多段検知）
+- ヘッダ・大見出しを除外する「実セル判定」を追加（looks_like_day_cell）
+- カレンダー HTML を保存（snapshots/.../calendar.html）して、検知根拠を可視化
+- 進捗ログ（施設到達・月抽出開始・件数サマリ）を必ず出力
+- 「翌月」ボタンの表記揺れや画像ボタン、プルダウン選択までフォールバック
 """
 
 import os
@@ -21,7 +22,7 @@ import requests
 from PIL import Image, ImageDraw
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-# （任意）JST時間帯チェック用。不要なら requirements から pytz を外し、本コードの is_within_monitoring_window を True 固定に。
+# （任意）JST時間帯チェック用
 try:
     import pytz
 except Exception:
@@ -112,7 +113,7 @@ def navigate_to_facility(page, facility):
     （鈴谷は click_sequence に「すべて」を含める）
     """
     if not BASE_URL:
-        raise RuntimeError("BASE_URL が未設定です。GitHub Secrets へ https://saitama.rsv.ws-scs.jp/web/ を設定してください。")
+        raise RuntimeError("BASE_URL が未設定です。Secrets の BASE_URL に https://saitama.rsv.ws-scs.jp/web/ を入れてください。")
 
     # トップへ
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60000)
@@ -127,16 +128,6 @@ def navigate_to_facility(page, facility):
         ok = try_click_text(page, label)
         if not ok:
             raise RuntimeError(f"クリック対象が見つかりません：『{label}』（施設: {facility['name']}）")
-
-
-def shift_month(page, shift_times, next_month_label):
-    """
-    「翌月」ボタンを shift_times 回クリックして月を進める
-    """
-    for _ in range(int(shift_times)):
-        ok = try_click_text(page, next_month_label)
-        if not ok:
-            raise RuntimeError(f"『{next_month_label}』への月遷移に失敗")
 
 
 def get_current_year_month_text(page):
@@ -211,14 +202,16 @@ def take_calendar_screenshot(calendar_root, out_path):
 # --------------------------------------------------------------------------------
 def status_from_text(raw_text, patterns):
     """
-    テキストからステータスを判断（直書き記号優先 → 英単語／日本語キーワード）
+    テキストからステータスを判断（直書き記号優先）
+    ※「空き状況」「空き」などの一般語で誤○にならないよう、広い語彙は使わない
     """
     txt = raw_text or ""
-    # 直書き記号
+    # 直書き記号のみ
     for ch in ["○", "〇", "△", "×"]:
         if ch in txt:
             return ch
-    # キーワード（英語／日本語）
+
+    # （必要な場合のみ）英語／日本語キーワード
     t = txt.lower()
     for kw in patterns["circle"]:
         if kw in t:
@@ -285,9 +278,39 @@ def status_from_css(el, page, config):
     return None
 
 
+def looks_like_day_cell(base):
+    """
+    日付セルっぽいかの簡易判定：
+    - テキストに 1〜31 の数字、または「○/△/×」記号が含まれる
+    - もしくは class に 'day' 'cell' 'calendar' を含む
+    - 曜日ヘッダ（「日曜日/月曜日/...」）は除外
+    """
+    try:
+        txt = (base.inner_text() or "").strip()
+        cls = (base.get_attribute("class") or "").lower()
+
+        # 曜日ヘッダは除外
+        if re.search(r"(日曜日|月曜日|火曜日|水曜日|木曜日|金曜日|土曜日)", txt):
+            return False
+
+        # 1〜31 の数字・直記号
+        if re.search(r"\b([1-9]|[12]\d|3[01])\b", txt):
+            return True
+        if any(ch in txt for ch in ["○", "〇", "△", "×"]):
+            return True
+
+        # クラス名ヒント
+        if any(k in cls for k in ["day", "cell", "calendar"]):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def extract_status_cells(page, calendar_root, config):
     """
-    カレンダー内のセル（td/gridcell/li/div）を広く走査し、ステータスを判定。
+    カレンダー内のセル（tbody td / gridcell）を広く走査し、ステータスを判定。
+    ヘッダ・大見出しを looks_like_day_cell で除外。
     戻り値：(cells, cal_bbox)
       cells = [{key, status, bbox{x,y,w,h}, text}]
     """
@@ -297,14 +320,23 @@ def extract_status_cells(page, calendar_root, config):
     cal_bbox = calendar_root.bounding_box() or {"x": 0, "y": 0, "width": 1600, "height": 1200}
     cal_x, cal_y = cal_bbox.get("x", 0), cal_bbox.get("y", 0)
 
-    cells = []
-    samples = []
+    cells, samples = [], []
 
-    candidates = calendar_root.locator("td, [role='gridcell'], li, div")
+    # 候補を限定：thead/section/div見出しではなく、tbody td / gridcell を優先
+    candidates = page.locator("tbody td")
+    if candidates.count() == 0:
+        candidates = calendar_root.locator("[role='gridcell']")
+    if candidates.count() == 0:
+        candidates = calendar_root.locator("td, [role='gridcell']")
+
     cnt = candidates.count()
-
     for i in range(cnt):
         base = candidates.nth(i)
+
+        # 実セル判定（ヘッダ・空セルは弾く）
+        if not looks_like_day_cell(base):
+            continue
+
         try:
             bbox = base.bounding_box()
             if not bbox:
@@ -314,7 +346,7 @@ def extract_status_cells(page, calendar_root, config):
             rel_y = max(0, bbox["y"] - cal_y)
             txt = (base.inner_text() or "").strip()
 
-            # 1) テキスト
+            # 1) テキスト（直記号優先）
             s = status_from_text(txt, patterns)
 
             # 2) 子<img>
@@ -335,6 +367,7 @@ def extract_status_cells(page, calendar_root, config):
                 s = status_from_css(base, page, config)
 
             if not s:
+                # 記号やステータスが判定できないセルは対象外（誤○にしない）
                 continue
 
             key = f"{int(rel_x/10)}-{int(rel_y/10)}:{txt[:40]}"
@@ -395,7 +428,7 @@ def send_to_discord(image_path, title_text, improved_cells_summary):
     Discord Webhookへ画像+メッセージ送信
     """
     if not DISCORD_WEBHOOK_URL:
-        raise RuntimeError("DISCORD_WEBHOOK_URL が未設定です。GitHub Secrets へ設定してください。")
+        raise RuntimeError("DISCORD_WEBHOOK_URL が未設定です。Secrets の DISCORD_WEBHOOK_URL を設定してください。")
 
     now = jst_now()
     jst_str = now.strftime("%Y-%m-%d %H:%M:%S JST")
@@ -437,120 +470,34 @@ def save_latest_state(dirpath: Path, state: dict):
 
 
 # --------------------------------------------------------------------------------
-# メイン
+# 月遷移（フォールバック付き）
 # --------------------------------------------------------------------------------
-def main():
-    if not BASE_URL:
-        raise RuntimeError("BASE_URL が未設定です。GitHub Secrets へ https://saitama.rsv.ws-scs.jp/web/ を設定してください。")
+def click_next_month(page, label_primary="翌月"):
+    """
+    「翌月」クリックの表記揺れ・画像ボタン・aria/title・プルダウン選択までフォールバック
+    """
+    # 1) テキスト／ボタン／リンク（厳密一致＋近似）
+    for cand in [label_primary, "次月", "次へ", "＞", ">>", "次月へ", "翌月へ"]:
+        if try_click_text(page, cand, timeout_ms=3000):
+            return True
 
-    # 時間帯チェック：JST 05:00〜23:59（②対応の可視化目的でログ出力）
-    if not is_within_monitoring_window(5, 23):
-        print("[INFO] Outside monitoring window (JST 05:00–24:00). Exiting.", flush=True)
-        sys.exit(0)
-
-    ensure_dirs()
-    config = load_config()
-
-    next_month_label = config.get("next_month_label", "翌月")
-    calendar_hint = config.get("calendar_root_hint", "空き状況")
-    highlight_alpha = int(config.get("highlight_alpha", 160) or 160)
-    highlight_border_width = int(config.get("highlight_border_width", 3) or 3)
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(viewport={"width": 1600, "height": 1200})
-        page = context.new_page()
-
-        # 施設順に巡回
-        for facility in config["facilities"]:
-            f_name = facility["name"]
-            f_short = FACILITY_TITLE_ALIAS.get(f_name, f_name)
-
-            # 施設トップへ到達（②対応：到達ログ）
-            navigate_to_facility(page, facility)
-            print(f"[INFO] Facility='{f_name}' reached. Starting month shifts: {facility.get('month_shifts', [])}", flush=True)
-
-            # 各月をシフト
-            for shift in facility.get("month_shifts", []):
-                # 月遷移
-                if int(shift) > 0:
-                    shift_month(page, int(shift), next_month_label)
-
-                # 年月テキスト
-                month_text = get_current_year_month_text(page) or "unknown_month"
-
-                # ②対応：月抽出開始ログ
-                print(f"[INFO] Facility='{f_name}', Shift={shift}, Month='{month_text}' -> extracting statuses...", flush=True)
-
-                # カレンダー抽出
-                cal_root = locate_calendar_root(page, calendar_hint)
-
-                # デバッグ：HTMLダンプ
-                if bool(config.get("debug", {}).get("dump_calendar_html", True)):
-                    out_html = facility_month_dir(f_short, month_text) / "calendar.html"
-                    dump_calendar_html(cal_root, out_html)
-
-                # ステータス抽出
-                cells, cal_bbox = extract_status_cells(page, cal_root, config)
-
-                # スクショ
-                out_dir = facility_month_dir(f_short, month_text)
-                calendar_png = out_dir / "calendar.png"
-                take_calendar_screenshot(cal_root, calendar_png)
-
-                # 前回状態読み込み
-                latest_state = load_latest_state(out_dir)
-
-                # 改善判定
-                improvements = []
-                for c in cells:
-                    prev = latest_state.get(c["key"])
-                    curr = c["status"]
-                    if prev is None:
-                        # 初期化（または新規セル）は改善通知対象外
-                        continue
+    # 2) aria-label / title をもつ要素を総当り
+    for cand in [label_primary, "次月", "次へ"]:
+        for sel in ["[aria-label]", "[title]"]:
+            loc = page.locator(sel)
+            cnt = loc.count()
+            for i in range(cnt):
+                el = loc.nth(i)
+                aria = el.get_attribute("aria-label") or ""
+                title = el.get_attribute("title") or ""
+                if cand in aria or cand in title:
                     try:
-                        if STATUS_RANK[curr] > STATUS_RANK[prev]:
-                            improvements.append(c)
-                    except KeyError:
-                        # 未知記号はスキップ
-                        continue
+                        el.click(timeout=3000)
+                        page.wait_for_load_state("networkidle", timeout=30000)
+                        return True
+                    except Exception:
+                        pass
 
-                # 状態更新（常に最新へ）
-                new_state = {c["key"]: c["status"] for c in cells}
-                save_latest_state(out_dir, new_state)
-
-                # 改善ありならハイライト＆Discord送付
-                if improvements:
-                    # 画像に黄色ハイライト
-                    draw_highlights_on_image(str(calendar_png), improvements,
-                                             alpha=highlight_alpha, border_width=highlight_border_width)
-
-                    # タイトル（施設短縮名+月番号）
-                    title_text = f"{f_short}{shift}"
-
-                    # 概要テキスト（上位10件）
-                    summaries = []
-                    for c in improvements[:10]:
-                        t = re.sub(r"\s+", " ", c["text"]).strip()
-                        summaries.append(f"- {t[:60]} ...：{latest_state.get(c['key'])} → {c['status']}")
-                    summary_text = f"改善セル数: {len(improvements)}\n" + "\n".join(summaries)
-
-                    # Discord送付
-                    send_to_discord(str(calendar_png), title_text, summary_text)
-                    print(f"[INFO] Discord notified: title='{title_text}', improvements={len(improvements)}", flush=True)
-                else:
-                    print(f"[INFO] Detection OK. Improvements=0 (Facility='{f_name}', Shift={shift})", flush=True)
-
-        context.close()
-        browser.close()
-
-
-if __name__ == "__main__":
-    try:
-        print("[INFO] monitor.py starting ...", flush=True)
-        main()
-        print("[INFO] monitor.py finished successfully.", flush=True)
-    except Exception as e:
-        print(f"[ERROR] {e}", file=sys.stderr)
-        sys.exit(1)
+    # 3) 画像ボタン（img alt/src に翌月キーワード）
+    imgs = page.locator("img")
+    icnt = imgs.count()
