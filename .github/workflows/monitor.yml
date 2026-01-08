@@ -1,4 +1,3 @@
-
 name: Facility Availability Monitor
 
 on:
@@ -44,12 +43,11 @@ jobs:
           key: ms-playwright-${{ runner.os }}-chromium-1.46.0
           restore-keys: |
             ms-playwright-${{ runner.os }}-chromium-
-            
+
       - name: Install Playwright (chromium only)
         run: |
           python -m playwright install-deps
           python -m playwright install chromium
-
 
       - name: Run monitor (with debug logs)
         env:
@@ -58,7 +56,7 @@ jobs:
           PYTHONUNBUFFERED: "1"        # 標準出力のバッファリングを無効化
         run: |
           echo "[INFO] Starting monitor.py ..."
-          python -u monitor.py          # -u でアンバッファ実行
+          python -u monitor.py          # -u でアンバッファ実行（DEBUGログを確実に出す）
           echo "[INFO] monitor.py finished."
 
       - name: Show snapshot files (debug)
@@ -77,3 +75,4 @@ jobs:
             git commit -m "chore: update snapshots ($(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M:%S JST'))"
             git push
           fi
+``
