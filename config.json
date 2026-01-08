@@ -1,3 +1,4 @@
+
 {
   "facilities": [
     {
@@ -28,7 +29,20 @@
   "next_month_label": "次の月",
   "calendar_root_hint": "空き状況",
   "status_patterns": {
-    "circle": ["全て空き"],
-    "triangle": ["一部空き"],
-    "cross": ["予約あり"]
+    "circle": ["全て空き", "全て空", "全部空き", "○", "〇", "available", "vacant", "free", "maru", "circle", "maru.png", "/maru.svg"],
+    "triangle": ["一部空き", "一部空", "部分空き", "△", "partial", "few", "warning", "limited", "sankaku", "triangle", "triangle.png", "/sankaku.svg"],
+    "cross": ["予約あり", "満席", "満員", "予約不可", "×", "ng", "batsu", "unavailable", "full", "closed", "cross", "cross.png", "/batsu.svg", "受け付け期間外", "休館日", "保守日", "雨天"]
   },
+  "css_class_patterns": {
+    "circle": ["status-ok", "ok", "vacant", "maru", "available", "is-available", "icon-ok"],
+    "triangle": ["status-partial", "partial", "few", "warning", "limited", "icon-partial"],
+    "cross": ["status-ng", "full", "unavailable", "batsu", "is-full", "icon-ng"]
+  },
+  "debug": {
+    "dump_calendar_html": true,
+    "log_top_samples": 15,
+    "highlight_alpha": 160,
+    "highlight_border_width": 3
+  }
+}
+``
