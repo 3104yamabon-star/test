@@ -427,3 +427,129 @@ def run_monitor():
 
                 # 当月
                 month_text = get_current_year_month_text(page) or "unknown"
+                print(f"[INFO] current month: {month_text}", flush=True)
+                cal_root = locate_calendar_root(page, month_text or "予約カレンダー")
+
+                fshort = FACILITY_TITLE_ALIAS.get(facility.get('name',''), facility.get('name',''))
+                outdir = facility_month_dir(fshort or 'unknown_facility', month_text)
+                dump_calendar_html(cal_root, outdir / 'calendar.html')
+                take_calendar_screenshot(cal_root, outdir / 'calendar.png')
+                print(f"[INFO] saved: {facility.get('name','')} - {month_text}", flush=True)
+
+                # ★ 当月の空き状況集計（JSON/CSV/ログ）
+                try:
+                    summary, details = summarize_vacancies(page, cal_root, config)
+                    (outdir / "status_counts.json").write_text(
+                        json.dumps({"month": month_text, "facility": facility.get('name',''),
+                                    "summary": summary, "details": details},
+                                   ensure_ascii=False, indent=2),
+                        "utf-8"
+                    )
+                    import csv
+                    with (outdir / "status_details.csv").open("w", newline="", encoding="utf-8") as fcsv:
+                        w = csv.writer(fcsv)
+                        w.writerow(["day", "status", "text"])
+                        for row in details:
+                            w.writerow([row["day"], row["status"], row["text"]])
+                    print(f"[INFO] summary({facility.get('name','')} - {month_text}): "
+                          f"○={summary['○']} △={summary['△']} ×={summary['×']} 未判定={summary['未判定']}",
+                          flush=True)
+                except Exception as e:
+                    print(f"[WARN] summarize (current) failed: {e}", flush=True)
+
+                # 以降、「次の月」を連続クリック → キャプチャ＆集計
+                max_shift = max(shifts)
+                next_label = config.get("next_month_label", "次の月")
+                prev_month_text = month_text
+
+                for step in range(1, max_shift + 1):
+                    ok = click_next_month(
+                        page,
+                        label_primary=next_label,
+                        calendar_root=cal_root,
+                        prev_month_text=prev_month_text,
+                        wait_timeout_ms=20000
+                    )
+                    if not ok:
+                        failed = SNAP_DIR / f"failed_next_month_step{step}_{fshort}.png"
+                        try:
+                            page.screenshot(path=str(failed))
+                        except Exception:
+                            pass
+                        print(f"[WARN] next-month click failed at step={step} (full-page captured)", flush=True)
+                        break
+
+                    month_text2 = get_current_year_month_text(page) or f"shift_{step}"
+                    print(f"[INFO] month(step={step}): {month_text2}", flush=True)
+                    cal_root2 = locate_calendar_root(page, month_text2 or "予約カレンダー")
+
+                    if step in shifts:
+                        outdir2 = facility_month_dir(fshort or 'unknown_facility', month_text2)
+                        dump_calendar_html(cal_root2, outdir2 / 'calendar.html')
+                        take_calendar_screenshot(cal_root2, outdir2 / 'calendar.png')
+                        print(f"[INFO] saved: {facility.get('name','')} - {month_text2}", flush=True)
+
+                        # ★ 各月の空き状況集計
+                        try:
+                            summary2, details2 = summarize_vacancies(page, cal_root2, config)
+                            (outdir2 / "status_counts.json").write_text(
+                                json.dumps({"month": month_text2, "facility": facility.get('name',''),
+                                            "summary": summary2, "details": details2},
+                                           ensure_ascii=False, indent=2),
+                                "utf-8"
+                            )
+                            import csv
+                            with (outdir2 / "status_details.csv").open("w", newline="", encoding="utf-8") as fcsv:
+                                w = csv.writer(fcsv)
+                                w.writerow(["day", "status", "text"])
+                                for row in details2:
+                                    w.writerow([row["day"], row["status"], row["text"]])
+                            print(f"[INFO] summary({facility.get('name','')} - {month_text2}): "
+                                  f"○={summary2['○']} △={summary2['△']} ×={summary2['×']} 未判定={summary2['未判定']}",
+                                  flush=True)
+                        except Exception as e:
+                            print(f"[WARN] summarize (step={step}) failed: {e}", flush=True)
+
+                    # 次ループ基準更新
+                    cal_root = cal_root2
+                    prev_month_text = month_text2
+
+            except Exception as e:
+                print(f"[WARN] run_monitor: facility処理中に例外: {e}", flush=True)
+                continue
+
+        browser.close()
+
+# --------------------------------------------------------------------------------
+# CLI：並列実行用 施設フィルタ（Actionsのmatrix対応）
+# --------------------------------------------------------------------------------
+def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--facility", default=None, help="監視対象施設名を指定（並列実行用）")
+    args = parser.parse_args()
+
+    if not is_within_monitoring_window():
+        print("[INFO] outside monitoring window. exit.", flush=True)
+        sys.exit(0)
+
+    # facility名でフィルタ（必要な場合のみ）
+    cfg = load_config()
+    if args.facility:
+        target = [f for f in cfg.get("facilities", []) if f.get("name") == args.facility]
+        if not target:
+            print(f"[WARN] facility '{args.facility}' not found in config.json", flush=True)
+            sys.exit(0)
+        cfg["facilities"] = target
+        tmp = BASE_DIR / "config.temp.json"
+        tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8")
+        global CONFIG_PATH
+        CONFIG_PATH = tmp
+
+    run_monitor()
+
+# --------------------------------------------------------------------------------
+# エントリポイント
+# --------------------------------------------------------------------------------
+if __name__ == "__main__":
+    main()
