@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 """
 さいたま市 施設予約システムの空き状況監視（改善のみ通知/キャプチャ保存）
@@ -11,17 +10,8 @@
 - 各月のカレンダー要素を抽出し、HTML/PNG を snapshots/<施設短縮名>/<YYYY年M月>/ に保存。
 - 「次の月」は javascript:moveCalender(...) による同一ページ DOM 差し替えのため、
   待機は networkidle ではなく「月テキスト（YYYY年M月）の変化」を指標とする。
-
-【必須環境変数（GitHub Secrets など）】
-- BASE_URL: 例 "https://saitama.rsv.ws-scs.jp/web/"
-- DISCORD_WEBHOOK_URL: Discord に通知を送る場合のみ必須（本コードでは通知は任意）
-
-【設定ファイル】
-- config.json（純正 JSON 形式）
-  - facilities[].name / click_sequence / month_shifts（例: [0,1,2,3]）
-  - next_month_label: "次の月"（サイト UI の表記に合わせる）
-  - status_patterns / css_class_patterns / debug など
 """
+
 import os
 import sys
 import json
@@ -116,7 +106,7 @@ def try_click_text(page, label, timeout_ms=15000, quiet=True):
 
 def navigate_to_facility(page, facility):
     """
-    トップへ → click_sequence の順で施設の当月ページまで到達
+    トップへ → click_sequence の順で施設の当月ページまで到達（初回のみ）
     """
     if not BASE_URL:
         raise RuntimeError("BASE_URL が未設定です。Secrets の BASE_URL に https://saitama.rsv.ws-scs.jp/web/ を入れてください。")
@@ -126,7 +116,7 @@ def navigate_to_facility(page, facility):
     # 任意のダイアログ（同意など）がある場合のフォールバック
     for opt in ["同意する", "OK", "確認", "閉じる"]:
         try_click_text(page, opt, timeout_ms=2000)
-    # 施設のクリック手順（初回のみ）
+    # 施設のクリック手順
     for label in facility["click_sequence"]:
         ok = try_click_text(page, label)
         if not ok:
@@ -184,13 +174,10 @@ def take_calendar_screenshot(calendar_root, out_path):
 # --------------------------------------------------------------------------------
 # 月遷移（高速化対応版）
 # --------------------------------------------------------------------------------
-
 def _compute_next_month_text(prev_month_text: str) -> str:
-    """
-    'YYYY年M月' → 次月の 'YYYY年M月' を返す（待機の目標に使う）
-    """
+    """'YYYY年M月' → 次月の 'YYYY年M月' を返す（待機の目標に使う）"""
     try:
-        m = re.match(r"(\d{4})年(\d{1,2})月", prev_month_text)
+        m = re.match(r"(\d{4})年(\d{1,2})月", prev_month_text or "")
         if not m:
             return ""
         y, mo = int(m.group(1)), int(m.group(2))
@@ -218,6 +205,7 @@ def click_next_month(page, label_primary="次の月", calendar_root=None,
     scopes.append(page)
 
     next_month_goal = _compute_next_month_text(prev_month_text or "")
+
     # クリック候補（順に試す）
     selectors = [
         "a:has-text('次の月')",
@@ -228,7 +216,7 @@ def click_next_month(page, label_primary="次の月", calendar_root=None,
     for scope in scopes:
         clicked = False
 
-        # 1) has-text（部分一致）優先
+        # 1) has-text（部分一致）
         for sel in selectors[:2]:
             try:
                 el = scope.locator(sel).first
@@ -244,7 +232,6 @@ def click_next_month(page, label_primary="次の月", calendar_root=None,
             try:
                 el = scope.locator("a[href*='moveCalender']").first
                 el.scroll_into_view_if_needed()
-                # 通常 click
                 el.click(timeout=2000)
                 clicked = True
             except Exception:
@@ -263,12 +250,11 @@ def click_next_month(page, label_primary="次の月", calendar_root=None,
                 pass
 
         if not clicked:
-            # 次のスコープへ
+            # 次のスコープで再試行
             continue
 
         # === クリック成功後の待機：月テキストの変化を待つ ===
         try:
-            # 期待月テキストが分かるなら、それを使う。分からない場合は「prevと異なる」条件にする。
             if next_month_goal:
                 page.wait_for_function(
                     """goal => {
@@ -296,7 +282,6 @@ def click_next_month(page, label_primary="次の月", calendar_root=None,
             pass
 
     return False
-
 
 # --------------------------------------------------------------------------------
 # 施設→当月/翌月/…のキャプチャ保存（高速化）
@@ -350,41 +335,43 @@ def run_monitor():
                 take_calendar_screenshot(cal_root, outdir / 'calendar.png')
                 print(f"[INFO] saved: {facility.get('name','')} - {month_text}", flush=True)
 
-                
-# 以降は「次の月」連打 → 各月キャプチャ
-max_shift = max(shifts)
-next_label = config.get("next_month_label", "次の月")
-prev_month_text = month_text
+                # 「次の月」を連続クリック → 各月キャプチャ（高速化本体）
+                max_shift = max(shifts)
+                next_label = config.get("next_month_label", "次の月")
+                prev_month_text = month_text
 
-for step in range(1, max_shift + 1):
-    ok = click_next_month(page,
-                          label_primary=next_label,
-                          calendar_root=cal_root,
-                          prev_month_text=prev_month_text,
-                          wait_timeout_ms=20000)
-    if not ok:
-        failed = SNAP_DIR / f"failed_next_month_step{step}_{fshort}.png"
-        try:
-            page.screenshot(path=str(failed))
-        except Exception:
-            pass
-        print(f"[WARN] next-month click failed at step={step} (full-page captured)", flush=True)
-        break
+                for step in range(1, max_shift + 1):
+                    ok = click_next_month(
+                        page,
+                        label_primary=next_label,
+                        calendar_root=cal_root,
+                        prev_month_text=prev_month_text,
+                        wait_timeout_ms=20000
+                    )
+                    if not ok:
+                        # 失敗時の全画面スクリーンショット（原因調査用）
+                        failed = SNAP_DIR / f"failed_next_month_step{step}_{fshort}.png"
+                        try:
+                            page.screenshot(path=str(failed))
+                        except Exception:
+                            pass
+                        print(f"[WARN] next-month click failed at step={step} (full-page captured)", flush=True)
+                        break
 
-    month_text2 = get_current_year_month_text(page) or f"shift_{step}"
-    print(f"[INFO] month(step={step}): {month_text2}", flush=True)
-    cal_root2 = locate_calendar_root(page, month_text2 or "予約カレンダー")
+                    # 月テキスト更新後に再取得・キャプチャ
+                    month_text2 = get_current_year_month_text(page) or f"shift_{step}"
+                    print(f"[INFO] month(step={step}): {month_text2}", flush=True)
+                    cal_root2 = locate_calendar_root(page, month_text2 or "予約カレンダー")
 
-    if step in shifts:
-        outdir2 = facility_month_dir(fshort or 'unknown_facility', month_text2)
-        dump_calendar_html(cal_root2, outdir2 / 'calendar.html')
-        take_calendar_screenshot(cal_root2, outdir2 / 'calendar.png')
-        print(f"[INFO] saved: {facility.get('name','')} - {month_text2}", flush=True)
+                    if step in shifts:  # 監視対象なら保存
+                        outdir2 = facility_month_dir(fshort or 'unknown_facility', month_text2)
+                        dump_calendar_html(cal_root2, outdir2 / 'calendar.html')
+                        take_calendar_screenshot(cal_root2, outdir2 / 'calendar.png')
+                        print(f"[INFO] saved: {facility.get('name','')} - {month_text2}", flush=True)
 
-    cal_root = cal_root2
-    prev_month_text = month_text2
-
-
+                    # 次ループの基準
+                    cal_root = cal_root2
+                    prev_month_text = month_text2
 
             except Exception as e:
                 print(f"[WARN] run_monitor: facility処理中に例外: {e}", flush=True)
