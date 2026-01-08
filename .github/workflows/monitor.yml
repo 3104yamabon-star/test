@@ -75,4 +75,3 @@ jobs:
             git commit -m "chore: update snapshots ($(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M:%S JST'))"
             git push
           fi
-``
