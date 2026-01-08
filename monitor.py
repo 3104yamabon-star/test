@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 """
 さいたま市 施設予約システムの空き状況監視（改善のみ通知）
@@ -387,3 +388,169 @@ def draw_highlights_on_image(image_path, cells_to_highlight, alpha=160, border_w
 
     out_img = Image.alpha_composite(img, overlay).convert("RGB")
     out_img.save(image_path)
+
+
+def send_to_discord(image_path, title_text, improved_cells_summary):
+    """
+    Discord Webhookへ画像+メッセージ送信
+    """
+    if not DISCORD_WEBHOOK_URL:
+        raise RuntimeError("DISCORD_WEBHOOK_URL が未設定です。GitHub Secrets へ設定してください。")
+
+    now = jst_now()
+    jst_str = now.strftime("%Y-%m-%d %H:%M:%S JST")
+
+    content = f"{title_text}\n改善を検知しました（{jst_str}）。\n{improved_cells_summary}"
+
+    files = {"file": open(image_path, "rb")}
+    data = {"content": content}
+    resp = requests.post(DISCORD_WEBHOOK_URL, data=data, files=files, timeout=30)
+    if resp.status_code >= 300:
+        raise RuntimeError(f"Discord送信に失敗しました: HTTP {resp.status_code} {resp.text}")
+
+
+# --------------------------------------------------------------------------------
+# 状態保存（施設×年月）
+# --------------------------------------------------------------------------------
+def facility_month_dir(f_short, month_text):
+    safe_fac = re.sub(r"[\\/:*?\"<>|]+", "_", f_short)
+    safe_month = re.sub(r"[\\/:*?\"<>|]+", "_", month_text or "unknown_month")
+    d = SNAP_DIR / safe_fac / safe_month
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def load_latest_state(dirpath: Path):
+    state_path = dirpath / "latest_state.json"
+    state = {}
+    if state_path.exists():
+        try:
+            state = json.loads(state_path.read_text("utf-8"))
+        except Exception as e:
+            print(f"[WARN] latest_state.json の読み込みに失敗: {e}", flush=True)
+            state = {}
+    return state
+
+
+def save_latest_state(dirpath: Path, state: dict):
+    (dirpath / "latest_state.json").write_text(json.dumps(state, ensure_ascii=False, indent=2), "utf-8")
+
+
+# --------------------------------------------------------------------------------
+# メイン
+# --------------------------------------------------------------------------------
+def main():
+    if not BASE_URL:
+        raise RuntimeError("BASE_URL が未設定です。GitHub Secrets へ https://saitama.rsv.ws-scs.jp/web/ を設定してください。")
+
+    # 時間帯チェック：JST 05:00〜23:59（②対応の可視化目的でログ出力）
+    if not is_within_monitoring_window(5, 23):
+        print("[INFO] Outside monitoring window (JST 05:00–24:00). Exiting.", flush=True)
+        sys.exit(0)
+
+    ensure_dirs()
+    config = load_config()
+
+    next_month_label = config.get("next_month_label", "翌月")
+    calendar_hint = config.get("calendar_root_hint", "空き状況")
+    highlight_alpha = int(config.get("highlight_alpha", 160) or 160)
+    highlight_border_width = int(config.get("highlight_border_width", 3) or 3)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(viewport={"width": 1600, "height": 1200})
+        page = context.new_page()
+
+        # 施設順に巡回
+        for facility in config["facilities"]:
+            f_name = facility["name"]
+            f_short = FACILITY_TITLE_ALIAS.get(f_name, f_name)
+
+            # 施設トップへ到達（②対応：到達ログ）
+            navigate_to_facility(page, facility)
+            print(f"[INFO] Facility='{f_name}' reached. Starting month shifts: {facility.get('month_shifts', [])}", flush=True)
+
+            # 各月をシフト
+            for shift in facility.get("month_shifts", []):
+                # 月遷移
+                if int(shift) > 0:
+                    shift_month(page, int(shift), next_month_label)
+
+                # 年月テキスト
+                month_text = get_current_year_month_text(page) or "unknown_month"
+
+                # ②対応：月抽出開始ログ
+                print(f"[INFO] Facility='{f_name}', Shift={shift}, Month='{month_text}' -> extracting statuses...", flush=True)
+
+                # カレンダー抽出
+                cal_root = locate_calendar_root(page, calendar_hint)
+
+                # デバッグ：HTMLダンプ
+                if bool(config.get("debug", {}).get("dump_calendar_html", True)):
+                    out_html = facility_month_dir(f_short, month_text) / "calendar.html"
+                    dump_calendar_html(cal_root, out_html)
+
+                # ステータス抽出
+                cells, cal_bbox = extract_status_cells(page, cal_root, config)
+
+                # スクショ
+                out_dir = facility_month_dir(f_short, month_text)
+                calendar_png = out_dir / "calendar.png"
+                take_calendar_screenshot(cal_root, calendar_png)
+
+                # 前回状態読み込み
+                latest_state = load_latest_state(out_dir)
+
+                # 改善判定
+                improvements = []
+                for c in cells:
+                    prev = latest_state.get(c["key"])
+                    curr = c["status"]
+                    if prev is None:
+                        # 初期化（または新規セル）は改善通知対象外
+                        continue
+                    try:
+                        if STATUS_RANK[curr] > STATUS_RANK[prev]:
+                            improvements.append(c)
+                    except KeyError:
+                        # 未知記号はスキップ
+                        continue
+
+                # 状態更新（常に最新へ）
+                new_state = {c["key"]: c["status"] for c in cells}
+                save_latest_state(out_dir, new_state)
+
+                # 改善ありならハイライト＆Discord送付
+                if improvements:
+                    # 画像に黄色ハイライト
+                    draw_highlights_on_image(str(calendar_png), improvements,
+                                             alpha=highlight_alpha, border_width=highlight_border_width)
+
+                    # タイトル（施設短縮名+月番号）
+                    title_text = f"{f_short}{shift}"
+
+                    # 概要テキスト（上位10件）
+                    summaries = []
+                    for c in improvements[:10]:
+                        t = re.sub(r"\s+", " ", c["text"]).strip()
+                        summaries.append(f"- {t[:60]} ...：{latest_state.get(c['key'])} → {c['status']}")
+                    summary_text = f"改善セル数: {len(improvements)}\n" + "\n".join(summaries)
+
+                    # Discord送付
+                    send_to_discord(str(calendar_png), title_text, summary_text)
+                    print(f"[INFO] Discord notified: title='{title_text}', improvements={len(improvements)}", flush=True)
+                else:
+                    print(f"[INFO] Detection OK. Improvements=0 (Facility='{f_name}', Shift={shift})", flush=True)
+
+        context.close()
+        browser.close()
+
+
+if __name__ == "__main__":
+    try:
+        print("[INFO] monitor.py starting ...", flush=True)
+        main()
+        print("[INFO] monitor.py finished successfully.", flush=True)
+    except Exception as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        sys.exit(1)
