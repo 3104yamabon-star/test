@@ -102,7 +102,8 @@ def try_click_text(page, label, timeout_ms=15000):
             locator.click(timeout=timeout_ms)
             page.wait_for_load_state("networkidle", timeout=30000)
             return True
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] extract_status_cells: 例外 {e}", flush=True)
             continue
     return False
 
@@ -173,7 +174,8 @@ def locate_calendar_root(page, hint):
             if len(t) > best_len:
                 best_len = len(t)
                 best = el
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] extract_status_cells: 例外 {e}", flush=True)
             continue
     return best or page.locator("body")
 
@@ -202,6 +204,9 @@ def take_calendar_screenshot(calendar_root, out_path):
 # --------------------------------------------------------------------------------
 def status_from_text(raw_text, patterns):
     """
+    ログ強化版：テキストからステータスを判断し、検出経路をログに出力
+    """
+    """
     テキストからステータスを判断（直書き記号優先）
     ※「空き状況」「空き」などの一般語で誤○にならないよう、広い語彙は使わない
     """
@@ -227,6 +232,9 @@ def status_from_text(raw_text, patterns):
 
 def status_from_img(el, patterns):
     """
+    ログ強化版：<img> の alt/title/src からの検出経路をログに出力
+    """
+    """
     <img> の alt / title / src から判断
     """
     alt = el.get_attribute("alt") or ""
@@ -234,21 +242,33 @@ def status_from_img(el, patterns):
     src = el.get_attribute("src") or ""
     s = status_from_text(alt + " " + title, patterns)
     if s:
+        print(f"[DEBUG] status_from_img: alt/titleで検出 status='{s}' alt='{alt[:40]}' title='{title[:40]}'", flush=True)
         return s
     s = status_from_text(src, patterns)
+    if s:
+        print(f"[DEBUG] status_from_img: srcで検出 status='{s}' src='{src[:80]}'", flush=True)
     return s
 
 
 def status_from_aria(el, patterns):
     """
+    ログ強化版：aria-label / title からの検出経路をログに出力
+    """
+    """
     aria-label / title から判断
     """
     aria = el.get_attribute("aria-label") or ""
     title = el.get_attribute("title") or ""
-    return status_from_text(aria + " " + title, patterns)
+    s = status_from_text(aria + " " + title, patterns)
+    if s:
+        print(f"[DEBUG] status_from_aria: 検出 status='{s}' aria='{(aria or )[:60]}' title='{(title or )[:40]}'", flush=True)
+    return s
 
 
 def status_from_css(el, page, config):
+    """
+    ログ強化版：CSS background-image と class 名からの検出をログ出力
+    """
     """
     CSSの background-image と class 名から判断
     """
@@ -384,7 +404,8 @@ def extract_status_cells(page, calendar_root, config):
                     "text": txt,
                     "bbox": [int(rel_x), int(rel_y), int(bbox["width"]), int(bbox["height"])]
                 })
-        except Exception:
+        except Exception as e:
+            print(f"[WARN] extract_status_cells: 例外 {e}", flush=True)
             continue
 
     # デバッグ出力
