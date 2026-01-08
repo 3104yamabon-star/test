@@ -184,67 +184,119 @@ def take_calendar_screenshot(calendar_root, out_path):
 # --------------------------------------------------------------------------------
 # 月遷移（高速化対応版）
 # --------------------------------------------------------------------------------
-def click_next_month(page, label_primary="次の月", calendar_root=None,
-                     prev_month_text=None, wait_timeout_ms=10000):
+
+def _compute_next_month_text(prev_month_text: str) -> str:
     """
-    「次の月」へ遷移（高速化対応版）：
+    'YYYY年M月' → 次月の 'YYYY年M月' を返す（待機の目標に使う）
+    """
+    try:
+        m = re.match(r"(\d{4})年(\d{1,2})月", prev_month_text)
+        if not m:
+            return ""
+        y, mo = int(m.group(1)), int(m.group(2))
+        if mo == 12:
+            y += 1
+            mo = 1
+        else:
+            mo += 1
+        return f"{y}年{mo}月"
+    except Exception:
+        return ""
+
+def click_next_month(page, label_primary="次の月", calendar_root=None,
+                     prev_month_text=None, wait_timeout_ms=20000):
+    """
+    「次の月」へ遷移（強化版）：
     - 探索スコープ：calendar_root優先 → 失敗時は page 全体
-    - 一致方法：厳密一致をやめて部分一致（余白や記号の揺れに強い）
-    - a[href*='moveCalender'] にも対応（JavaScriptによるDOM差し替え型）
-    - 待機方法：ページ遷移ではなく「月テキスト（YYYY年M月）が変化するまで」をポーリング
+    - 一致方法：厳密一致→部分一致（has-text）、href=moveCalender を直接クリック
+    - 待機方法：ページ遷移ではなく「月テキストの変化」を指標に wait_for_function
+    - 最終フォールバック：リンクの href を eval 実行（javascript:moveCalender(...)）
     """
     scopes = []
     if calendar_root is not None:
         scopes.append(calendar_root)
     scopes.append(page)
 
-    candidates = [label_primary, "次の月", "次月", "次へ", "翌月", "＞", ">>"]
+    next_month_goal = _compute_next_month_text(prev_month_text or "")
+    # クリック候補（順に試す）
+    selectors = [
+        "a:has-text('次の月')",
+        "a:has-text('次')",
+        "a[href*='moveCalender']",
+    ]
 
     for scope in scopes:
         clicked = False
 
-        # (a) button/link/text（部分一致）
-        for cand in candidates:
+        # 1) has-text（部分一致）優先
+        for sel in selectors[:2]:
             try:
-                scope.get_by_role("button", name=cand, exact=False).first.click(timeout=1500)
-                clicked = True
-                break
-            except Exception:
-                pass
-            try:
-                scope.get_by_role("link", name=cand, exact=False).first.click(timeout=1500)
-                clicked = True
-                break
-            except Exception:
-                pass
-            try:
-                scope.get_by_text(cand, exact=False).first.click(timeout=1500)
+                el = scope.locator(sel).first
+                el.scroll_into_view_if_needed()
+                el.click(timeout=2000)
                 clicked = True
                 break
             except Exception:
                 pass
 
-        # (b) hrefが moveCalender の <a> を直接クリック
+        # 2) href*='moveCalender' を直接クリック
         if not clicked:
             try:
-                scope.locator("a[href*='moveCalender']").first.click(timeout=1500)
+                el = scope.locator("a[href*='moveCalender']").first
+                el.scroll_into_view_if_needed()
+                # 通常 click
+                el.click(timeout=2000)
                 clicked = True
             except Exception:
                 pass
 
+        # 3) 最終フォールバック：href の JavaScript を直接 eval 実行
         if not clicked:
-            continue  # 次のスコープで再試行
+            try:
+                el = scope.locator("a[href*='moveCalender']").first
+                href = el.get_attribute("href") or ""
+                if href.startswith("javascript:"):
+                    js = href[len("javascript:"):].strip()
+                    page.evaluate(js)  # 同一ページ内で moveCalender(...) を直接呼ぶ
+                    clicked = True
+            except Exception:
+                pass
 
-        # クリック後の待機：月テキストが変わるまで（DOM差し替えに対応）
-        start = time.time()
-        while (time.time() - start) * 1000 < wait_timeout_ms:
-            cur = get_current_year_month_text(page) or ""
-            if prev_month_text and cur and cur != prev_month_text:
-                return True  # 月表示が変化＝次月へ遷移成功
-            time.sleep(0.2)
-        # このスコープではテキスト変化を検知できなかった → 他スコープにフォールバック
+        if not clicked:
+            # 次のスコープへ
+            continue
+
+        # === クリック成功後の待機：月テキストの変化を待つ ===
+        try:
+            # 期待月テキストが分かるなら、それを使う。分からない場合は「prevと異なる」条件にする。
+            if next_month_goal:
+                page.wait_for_function(
+                    """goal => {
+                        const txt = document.body.innerText || '';
+                        return txt.includes(goal);
+                    }""",
+                    arg=next_month_goal,
+                    timeout=wait_timeout_ms
+                )
+            else:
+                page.wait_for_function(
+                    """prev => {
+                        const txt = document.body.innerText || '';
+                        const m = txt.match(/(\\d{4})\\s*年\\s*(\\d{1,2})\\s*月/);
+                        if (!m) return false;
+                        const cur = `${m[1]}年${parseInt(m[2], 10)}月`;
+                        return prev && cur !== prev;
+                    }""",
+                    arg=prev_month_text or "",
+                    timeout=wait_timeout_ms
+                )
+            return True
+        except Exception:
+            # このスコープでは変化を検知できず → 他スコープで再試行
+            pass
 
     return False
+
 
 # --------------------------------------------------------------------------------
 # 施設→当月/翌月/…のキャプチャ保存（高速化）
