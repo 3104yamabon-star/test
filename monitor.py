@@ -310,28 +310,26 @@ def looks_like_day_cell(base):
     """
     日付セルっぽいかの簡易判定：
     - テキストに 1〜31 の数字、または「○/△/×」記号が含まれる
-    - もしくは class に 'day' 'cell' 'calendar' を含む
-    - 曜日ヘッダ（「日曜日/月曜日/...」）は除外
+    - もしくは class に 'day' 'cell' 'calendar' 'fc-daygrid-day' を含む
+    - 曜日ヘッダ（「日曜/月曜/...」）は除外
     """
     try:
         txt = (base.inner_text() or "").strip()
         cls = (base.get_attribute("class") or "").lower()
-
-        
         # 曜日ヘッダは除外（簡略化）
         if re.search(r"(日曜|月曜|火曜|水曜|木曜|金曜|土曜)", txt):
             return False
-    
         # 1〜31 の数字 or 直記号
-        if re.search(r"\b([1-9]|[12]\d|3[01])\b", txt):
+        if re.search(r"([1-9]|[12]\d|3[01])", txt):
             return True
         if any(ch in txt for ch in ["○", "〇", "△", "×"]):
             return True
         # クラス名ヒント（少し広め）
         if any(k in cls for k in ["day", "cell", "calendar", "fc-daygrid-day"]):
             return True
-
-
+    except Exception:
+        pass
+    return False
 def extract_status_cells(page, calendar_root, config):
     """
     カレンダー内のセル（tbody td / gridcell）を広く走査し、ステータスを判定。
