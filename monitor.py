@@ -142,11 +142,27 @@ def get_current_year_month_text(page):
         pass
     return None
 
-def locate_calendar_root(page, hint):
+
+def locate_calendar_root(page, hint: str, facility: dict = None):
     """
-    カレンダーらしき要素（grid/table等）からテキスト量最大のものを選ぶ。
+    カレンダー枠を厳密に特定する:
+    - configのcalendar_selectorがあればそれを最優先
+    - グリッド候補は role=grid / table / div.calendar 等だが、
+      '曜日文字'と'十分なセル数'を持つもののみ採用
+    - 失敗時は body にフォールバックせず例外を送出
     """
+    # 1) facility固有セレクタがあれば最優先
+    sel_cfg = (facility or {}).get("calendar_selector")
+    if sel_cfg:
+        loc = page.locator(sel_cfg)
+        if loc.count() > 0:
+            el = loc.first
+            return el
+
+    # 2) 汎用探索（曜日ヘッダとセル数チェック）
     candidates = []
+    weekday_markers = ["月", "火", "水", "木", "金", "土", "日"]
+
     for sel in ["[role='grid']", "table", "section", "div.calendar", "div"]:
         loc = page.locator(sel)
         cnt = loc.count()
@@ -154,14 +170,37 @@ def locate_calendar_root(page, hint):
             el = loc.nth(i)
             try:
                 t = (el.inner_text() or "").strip()
-                if (hint and hint in t) or re.search(r"(空き状況|予約あり|一部空き|カレンダー)", t):
-                    candidates.append((len(t), el))
             except Exception:
                 continue
+
+            # ヒント文字（例：空き状況）や月表示の付近にありそうなもののみ
+            score = 0
+            if hint and hint in t:
+                score += 2
+
+            # 曜日が揃っているか（7種のうち4種以上含む）
+            wk = sum(1 for w in weekday_markers if w in t)
+            if wk >= 4:
+                score += 3
+
+            # セル数判定（td / gridcell が28以上ある）
+            try:
+                cells = el.locator("td, [role='gridcell'], .fc-daygrid-day, .calendar-day, .day")
+                cell_cnt = cells.count()
+                if cell_cnt >= 28:  # 月表示らしい最低ライン
+                    score += 3
+            except Exception:
+                pass
+
+            if score >= 5:  # 閾値
+                candidates.append((score, el))
+
     if not candidates:
-        return page.locator("body")
+        raise RuntimeError("カレンダー枠の特定に失敗しました（候補が見つからないため監視を中止）。")
+
     candidates.sort(key=lambda x: x[0], reverse=True)
     return candidates[0][1]
+
 
 def dump_calendar_html(calendar_root, out_path):
     """デバッグ用：カレンダー要素の outerHTML を保存"""
