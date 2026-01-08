@@ -113,8 +113,6 @@ def try_click_text(page, label, timeout_ms=15000, quiet=True):
     return False
 
 
-
-
 def navigate_to_facility(page, facility):
     """
     トップへ → click_sequence の順で施設の当月ページまで到達
