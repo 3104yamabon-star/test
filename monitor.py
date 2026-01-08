@@ -607,11 +607,14 @@ def run_monitor():
                 shot = outdir / 'calendar.png'
                 take_calendar_screenshot(calendar_root, shot)
 
-                # 翌月
-                if click_next_month(page):
+                
+                # 翌月（config.jsonの next_month_label を優先）
+                next_label = config.get("next_month_label", "翌月")
+                if click_next_month(page, label_primary=next_label, calendar_root=calendar_root):
                     next_month_text = get_current_year_month_text(page) or "unknown"
                     print(f"[INFO] next month: {next_month_text}", flush=True)
                     calendar_root2 = locate_calendar_root(page, next_month_text or "予約カレンダー")
+
                     try:
                         bbox2 = calendar_root2.bounding_box() or {"width": None, "height": None}
                     except Exception:
