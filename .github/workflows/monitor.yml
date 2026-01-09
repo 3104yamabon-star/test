@@ -1,3 +1,4 @@
+
 name: Facility Availability Monitor
 
 on:
@@ -6,22 +7,53 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # ← コミット/プッシュに必要
+  contents: write  # コミット/プッシュに必要
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
 
-    # Playwright 公式 Python コンテナを使用（ブラウザ同梱）
-    container:
-      image: mcr.microsoft.com/playwright/python:v1.46.0-jammy
+    # 同時実行を制限（重複起動で競合しないように）
+    concurrency:
+      group: facility-monitor
+      cancel-in-progress: false
+
+    env:
+      PYTHONUNBUFFERED: "1"
+      OUTPUT_DIR: snapshots
+      # Playwright ブラウザのキャッシュディレクトリ（標準）
+      PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
 
     steps:
       # --- リポジトリチェックアウト ---
       - name: Checkout
         uses: actions/checkout@v4
 
-      # --- 作業ディレクトリと環境の確認（デバッグしやすく） ---
+      # --- Python をセットアップ（バージョンは必要に応じて固定化可能） ---
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # --- pip キャッシュ（高速化） ---
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      # --- Playwright ブラウザをキャッシュ（初回のみダウンロード、以降は再利用） ---
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-msplaywright-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-msplaywright-
+
+      # --- ワークスペース情報（任意のデバッグ） ---
       - name: Show workspace info
         run: |
           echo "PWD=$(pwd)"
@@ -37,21 +69,26 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      # --- pip キャッシュ（高速化） ---
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
       # --- 依存のインストール ---
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
+          # Playwright 本体が requirements.txt にない場合のフォールバック
+          python - <<'PY'
+          import subprocess, sys
+          try:
+              import playwright  # noqa
+          except Exception:
+              print("[INFO] playwright not found in environment; installing...")
+              subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
+          PY
 
-      # --- config.json の整合性チェック（常に先に検証） ---
+      # --- Playwright ブラウザのセットアップ（Chromiumのみ） ---
+      - name: Install Playwright browsers (Chromium)
+        run: |
+          python -m playwright install --with-deps chromium
+
+      # --- config.json の整合性チェック ---
       - name: Validate config.json
         run: |
           python -m json.tool config.json > /dev/null
@@ -59,11 +96,11 @@ jobs:
       # --- 監視実行（レポジトリ直下 snapshots/ に保存） ---
       - name: Run monitor (force)
         env:
-          OUTPUT_DIR: snapshots                      # ← レポジトリ直下
-          BASE_URL: ${{ secrets.BASE_URL }}          # 例: https://saitama.rsv.ws-scs.jp/web/
+          OUTPUT_DIR: ${{ env.OUTPUT_DIR }}
+          BASE_URL: ${{ secrets.BASE_URL }}              # 例: https://saitama.rsv.ws-scs.jp/web/
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          PYTHONUNBUFFERED: "1"
-          MONITOR_FORCE: "1"                         # ← 時間帯ガードをバイパス
+          MONITOR_FORCE: "1"                             # 時間帯ガードをバイパス
+          GRACE_MS: "1500"                               # 画面安定化猶予（必要に応じて調整）
         run: |
           echo "[INFO] Starting monitor.py ..."
           python -u monitor.py --force
@@ -73,29 +110,28 @@ jobs:
       - name: Show snapshot files (detailed)
         run: |
           echo "----- snapshots tree -----"
-          find snapshots -type f -printf "%T@  %TY-%Tm-%Td %TH:%TM:%TS  %p  %s bytes\n" | sort -n || true
+          find "${OUTPUT_DIR}" -type f -printf "%T@ %TY-%Tm-%Td %TH:%TM:%TS %p %s bytes\n" | sort -n || true
           echo "----- git status/diff -----"
-          git status snapshots/ || true
-          git diff --name-only snapshots/ || true
+          git status "${OUTPUT_DIR}/" || true
+          git diff --name-only "${OUTPUT_DIR}/" || true
 
       # --- .gitignore で無視されていないか確認＆強制追加 ---
       - name: Ensure snapshots tracked by Git
         run: |
           echo "----- git check-ignore -----"
-          git check-ignore -v snapshots snapshots/** || true
+          git check-ignore -v "${OUTPUT_DIR}" "${OUTPUT_DIR}/**" || true
           # .gitignore に書かれていても強制追加
-          git add -f snapshots/ || true
+          git add -f "${OUTPUT_DIR}/" || true
 
       # --- Commit & Push （差分が無ければ空コミットで履歴を残す） ---
       - name: Commit & Push snapshot updates
         run: |
           set -e
-          # 差分があれば普通にコミット
-          if [[ -n "$(git status --porcelain snapshots/)" ]]; then
+          if [[ -n "$(git status --porcelain "${OUTPUT_DIR}/")" ]]; then
             git commit -m "chore: update snapshots ($(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M:%S JST'))"
             git push
           else
-            echo "No changes detected in snapshots/; creating an empty commit for run history."
+            echo "No changes detected in ${OUTPUT_DIR}/; creating an empty commit for run history."
             git commit -m "chore: run without snapshot changes ($(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M:%S JST'))" --allow-empty || true
             git push || true
           fi
@@ -105,5 +141,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: snapshots-${{ github.run_id }}
-          path: snapshots/
+          path: ${{ env.OUTPUT_DIR }}/
           if-no-files-found: warn
