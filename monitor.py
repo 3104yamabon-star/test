@@ -30,6 +30,61 @@ import requests
 from PIL import Image, ImageDraw
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
+
+from datetime import datetime
+import json
+from pathlib import Path
+
+def load_last_summary(outdir: Path) -> dict:
+    """過去の status_counts.json を読み、直近 summary を返す。無ければ None。"""
+    fp = outdir / "status_counts.json"
+    if not fp.exists():
+        return None
+    try:
+        data = json.loads(fp.read_text("utf-8"))
+        return data.get("summary")
+    except Exception:
+        return None
+
+def summaries_changed(prev: dict, cur: dict) -> bool:
+    """summary(dict) の変化判定。キー欠損も考慮して厳密比較。"""
+    if prev is None and cur is not None:
+        return True
+    if prev is None and cur is None:
+        return False
+    # 期待キー（○/△/×/未判定）が揃っているかを保証
+    keys = {"○", "△", "×", "未判定"}
+    for k in keys:
+        if prev.get(k, 0) != cur.get(k, 0):
+            return True
+    return False
+
+def save_calendar_assets(cal_root, outdir: Path, save_timestamped: bool):
+    """
+    カレンダーHTML/PNGを保存する。
+    save_timestamped=True のとき、履歴用にタイムスタンプ付きファイルも作成。
+    """
+    # 最新の別名は常に上書きしておく（運用により False でもOK）
+    latest_html = outdir / "calendar.html"
+    latest_png = outdir / "calendar.png"
+
+    # 履歴用タイムスタンプ
+    ts = datetime.now().strftime("%Y%m%d_%H%M")
+    html_ts = outdir / f"calendar_{ts}.html"
+    png_ts = outdir / f"calendar_{ts}.png"
+
+    # 最新を更新
+    dump_calendar_html(cal_root, latest_html)
+    take_calendar_screenshot(cal_root, latest_png)
+
+    if save_timestamped:
+        dump_calendar_html(cal_root, html_ts)
+        take_calendar_screenshot(cal_root, png_ts)
+        print(f"[INFO] saved (timestamped): {html_ts.name}, {png_ts.name}", flush=True)
+    else:
+        print(f"[INFO] saved (latest only): {latest_html.name}, {latest_png.name}", flush=True)
+
+
 # （任意）JST時間帯チェック用
 try:
     import pytz
