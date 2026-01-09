@@ -20,7 +20,6 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       OUTPUT_DIR: snapshots
-      # Playwright がブラウザを置く場所を明示（キャッシュ対象）
       PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
 
     steps:
@@ -51,28 +50,40 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          # Playwright 本体が requirements.txt に無ければフォールバックで入れる
+          # Playwright 本体が requirements.txt に無ければフォールバックで入れる（バージョン固定推奨）
           python - <<'PY'
           import subprocess, sys
           try:
               import playwright  # noqa
               print("[INFO] playwright package is present.")
           except Exception:
-              print("[INFO] playwright not found; installing...")
+              print("[INFO] playwright not found; installing pinned version...")
               subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright==1.46.0"])
           PY
 
-      # --- Playwright バージョンに応じたキャッシュキーを生成 ---
+      # --- Playwright バージョンに応じたキャッシュキーを生成（__version__は使わない） ---
       - name: Compute Playwright cache key
         id: pw
         shell: bash
         run: |
           set -e
+          # 1) importlib.metadata から取得（標準）
           PW_VER=$(python - <<'PY'
-          import playwright, sys
-          print(playwright.__version__)
+          try:
+              import importlib.metadata as m
+              print(m.version("playwright"))
+          except Exception:
+              print("")
           PY
           )
+          # 2) フォールバック: pip show
+          if [ -z "${PW_VER}" ]; then
+            PW_VER=$(python -m pip show playwright | awk '/Version:/ {print $2}')
+          fi
+          if [ -z "${PW_VER}" ]; then
+            echo "[ERROR] Failed to determine Playwright version."
+            exit 1
+          fi
           echo "Playwright version: ${PW_VER}"
           echo "version=${PW_VER}" >> "$GITHUB_OUTPUT"
 
@@ -99,11 +110,11 @@ jobs:
             echo "[INFO] No cached Chromium browsers found; will install."
           fi
 
-      # --- Playwright ブラウザのインストール（初回のみ）。依存は既に入っているので --with-deps は不要 ---
+      # --- Playwright ブラウザのインストール（初回のみ） ---
       - name: Install Playwright browsers (Chromium)
         if: steps.have_browsers.outputs.found == 'false'
         run: |
-          # 依存が未導入のケースに備え、Ubuntu標準runnerなら通常済みなので軽量化
+          # 依存が未導入のケースに備えて --with-deps を付けても良いですが、既に runner 依存が満たされることが多いです
           python -m playwright install chromium
 
       # --- ワークスペース情報（任意のデバッグ） ---
@@ -131,10 +142,10 @@ jobs:
       - name: Run monitor (force)
         env:
           OUTPUT_DIR: ${{ env.OUTPUT_DIR }}
-          BASE_URL: ${{ secrets.BASE_URL }}              # 例: https://saitama.rsv.ws-scs.jp/web/
+          BASE_URL: ${{ secrets.BASE_URL }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          MONITOR_FORCE: "1"                             # 時間帯ガードをバイパス
-          GRACE_MS: "1500"                               # 画面安定化猶予（必要に応じて調整）
+          MONITOR_FORCE: "1"
+          GRACE_MS: "1500"
         run: |
           echo "[INFO] Starting monitor.py ..."
           python -u monitor.py --force
