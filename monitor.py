@@ -8,12 +8,15 @@
 - 月遷移の成功判定を「月テキスト変化」のみで高速化
 - ①アダプティブ待機（初期200ms＋セル数検知、上限GRACE_MS既定1000ms）
 - ② summarize_vacancies を HTML一括パース（Playwright DOMアクセス最小化）
-- ★ 差分検知（セル単位）＋ Discord通知（集約タイプ、Embed→403時テキストフォールバック）
+- ★ 差分検知（セル単位）＋ Discord通知（集約タイプ）
+    - Embed成功時は施設別カラー、失敗時はテキストへ自動フォールバック
+    - content 2000字分割、429リトライ、詳細レスポンス本文ログ
 
 通知仕様（改善判定）:
 改善遷移 = ×→△, △→○, ×→○, 未判定→△, 未判定→○
 通知タイトル = 施設略語 + 月（例: 南浦和 2026年2月）
 通知本文 = YYYY年M月D日 (曜・祝) : 前回 → 今回（ゼロパディングなし）
+※ ステータス表示は「絵文字のみ」（太字なし）
 """
 
 import os
@@ -652,16 +655,28 @@ def _is_japanese_holiday(dt: datetime.date) -> bool:
     if not INCLUDE_HOLIDAY_FLAG:
         return False
     if jpholiday is None:
-        # jpholidayが未導入なら祝日判定はスキップ（「・祝」表示なし）
         return False
     try:
         return jpholiday.is_holiday(dt)
     except Exception:
         return False
 
+# --- 装飾用（絵文字のみ） ---
+_STATUS_EMOJI = {
+    "×": "✖️",
+    "△": "🔼",
+    "○": "⭕️",
+    "未判定": "❓",
+}
+def _decorate_status(st: str) -> str:
+    """ステータスを絵文字のみで整形（例：🔼）。"""
+    st = st or "未判定"
+    return _STATUS_EMOJI.get(st, "❓")
+
 def build_aggregate_lines(month_text: str, prev_details: List[Dict[str,str]], cur_details: List[Dict[str,str]]) -> List[str]:
     """
-    改善セルを抽出し、'YYYY年M月D日 (曜[・祝]) : 前回 → 今回' の行を返す（昇順）。
+    改善セルを抽出し、'YYYY年M月D日 (曜[・祝]) : <prev> → <cur>' の行を返す（昇順）。
+    - <prev>/<cur> は 絵文字のみ（太字なし）
     """
     ym = _parse_month_text(month_text)
     if not ym: return []
@@ -688,15 +703,15 @@ def build_aggregate_lines(month_text: str, prev_details: List[Dict[str,str]], cu
         if (prev_st, cur_st) in IMPROVE_TRANSITIONS:
             dt = datetime.date(y, mo, di)
             wd = _weekday_jp(dt)
-            # 祝日名は付けず「・祝」だけ
             wd_part = f"{wd}・祝" if _is_japanese_holiday(dt) else wd
-            # ゼロパディングなし
-            line = f"{y}年{mo}月{di}日 ({wd_part}) : {prev_st} → {cur_st}"
+            prev_fmt = _decorate_status(prev_st)
+            cur_fmt  = _decorate_status(cur_st)
+            line = f"{y}年{mo}月{di}日 ({wd_part}) : {prev_fmt} → {cur_fmt}"
             lines.append(line)
     return lines
 
 # ======================================================================
-# Discord通知（完全対応版：Embed→403時テキストフォールバック／長文分割／429リトライ／詳細本文ログ）
+# Discord通知（Embed→失敗時テキストフォールバック／長文分割／429リトライ／詳細本文ログ）
 # ======================================================================
 
 DISCORD_CONTENT_LIMIT = 2000          # content の最大文字数
@@ -826,6 +841,23 @@ class DiscordWebhookClient:
                 print(f"[ERROR] Discord text failed (p{i}/{len(pages)}): HTTP {status} body={body}", flush=True)
         return ok_all
 
+# --- 施設ごとの色分け（16進指定） ---
+# 南浦和→青、岩槻→緑、鈴谷→黄色、岸町→赤
+_FACILITY_ALIAS_COLOR_HEX = {
+    "南浦和": "0x3498DB",  # Blue
+    "岩槻":   "0x2ECC71",  # Green
+    "鈴谷":   "0xF1C40F",  # Yellow
+    "岸町":   "0xE74C3C",  # Red
+}
+_DEFAULT_COLOR_HEX = "0x00B894"      # 既定（緑系）
+
+def _hex_to_int(hex_str: str) -> int:
+    """'0xRRGGBB' → 10進整数へ安全に変換"""
+    try:
+        return int(hex_str, 16)
+    except Exception:
+        return int(_DEFAULT_COLOR_HEX, 16)
+
 def send_aggregate_lines(webhook_url: Optional[str],
                          facility_alias: str,
                          month_text: str,
@@ -841,9 +873,7 @@ def send_aggregate_lines(webhook_url: Optional[str],
       - DISCORD_MAX_LINES: 行数上限（長文抑制）
       - DISCORD_USER_AGENT: 任意UA
     """
-    if not webhook_url:
-        return
-    if not lines:
+    if not webhook_url or not lines:
         return
 
     force_text = (os.getenv("DISCORD_FORCE_TEXT", "0").strip() == "1")
@@ -860,16 +890,19 @@ def send_aggregate_lines(webhook_url: Optional[str],
     title = f"{facility_alias} {month_text}"
     description = "\n".join(lines)
 
+    # 施設ごと色決め（alias ベース）
+    color_hex = _FACILITY_ALIAS_COLOR_HEX.get(facility_alias, _DEFAULT_COLOR_HEX)
+    color_int = _hex_to_int(color_hex)
+
     client = DiscordWebhookClient.from_env()
-    # from_env は DISCORD_WEBHOOK_URL を参照するが、明示引数を優先
-    client.webhook_url = webhook_url
+    client.webhook_url = webhook_url  # 明示引数を優先
 
     if force_text:
         content = f"**{title}**\n{description}"
         client.send_text(content)
         return
 
-    client.send_embed(title=title, description=description, color=0x00B894, footer_text="Facility monitor")
+    client.send_embed(title=title, description=description, color=color_int, footer_text="Facility monitor")
 
 # ====== メイン ======
 def run_monitor():
@@ -1033,3 +1066,4 @@ if __name__ == "__main__":
     print(f"[INFO] BASE_DIR={BASE_DIR} cwd={Path.cwd()} OUTPUT_ROOT={OUTPUT_ROOT}", flush=True)
     main()
     print("[INFO] monitor.py finished.", flush=True)
+
