@@ -10,6 +10,7 @@
 - 『戻る』クリック後に wait_back_to_list_confirm() で「館一覧へ復帰したこと」をDOMの特徴で確認（最大 ~1.8s）。
 - 鈴谷公民館のみ、詳細遷移直後に『すべて』を押す。
 - 監視月数は config.json の month_shifts に従う（例：岸町・鈴谷=0,1 / 南浦和・岩槻南部=0,1,2,3）。
+- ★ 監視時間帯は JST 05:00〜23:55（分まで判定）。MONITOR_FORCE=1 または --force でバイパス可能。
 """
 
 import os
@@ -35,9 +36,13 @@ except Exception:
 
 BASE_URL = os.getenv("BASE_URL")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+
+# ★ 時間帯ゲート（force のときは無視）
 MONITOR_FORCE = os.getenv("MONITOR_FORCE", "0").strip() == "1"
 MONITOR_START_HOUR = int(os.getenv("MONITOR_START_HOUR", "5"))
-MONITOR_END_HOUR = int(os.getenv("MONITOR_END_HOUR", "23"))
+MONITOR_END_HOUR   = int(os.getenv("MONITOR_END_HOUR",   "23"))
+MONITOR_END_MINUTE = int(os.getenv("MONITOR_END_MINUTE", "55"))  # ★ 分まで指定（既定 55）
+
 TIMING_VERBOSE = os.getenv("TIMING_VERBOSE", "0").strip() == "1"
 FAST_ROUTES = os.getenv("FAST_ROUTES", "0").strip() == "1"
 
@@ -77,11 +82,19 @@ def jst_now() -> datetime.datetime:
     jst = pytz.timezone("Asia/Tokyo")
     return datetime.datetime.now(jst)
 
-def is_within_monitoring_window(start_hour=5, end_hour=23):
+# ★ 分まで判定する時間帯ゲート
+def is_within_monitoring_window(start_hour=5, end_hour=23, end_minute=55):
+    """
+    JST で start_hour:00 〜 end_hour:end_minute の間なら True を返す。
+    例）start_hour=5, end_hour=23, end_minute=55 → 05:00〜23:55 が True
+    """
     try:
         now = jst_now()
-        return (start_hour <= now.hour <= end_hour), now
+        start = now.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+        end   = now.replace(hour=end_hour,   minute=end_minute, second=59, microsecond=999000)
+        return (start <= now <= end), now
     except Exception:
+        # 万一 TZ 取得失敗等があれば許可（運用を止めない）
         return True, None
 
 def load_config() -> Dict[str, Any]:
@@ -318,7 +331,7 @@ def click_back_to_list(page, timeout_ms: int = 1500) -> bool:
         pass
     return False
 
-# ====== ★館一覧復帰確認（クリック後のDOM変化を待つ） ======
+# ====== 館一覧復帰確認（クリック後のDOM変化を待つ） ======
 def wait_back_to_list_confirm(page, timeout_ms: int = 1800, candidates: Optional[List[str]] = None) -> bool:
     """
     館一覧（施設選択）へ戻れたことを、DOMの特徴で確認する。
@@ -737,7 +750,8 @@ def _summarize_vacancies_fallback(page, calendar_root, config):
         return summary, details
 
 def facility_month_dir(short: str, month_text: str) -> Path:
-    safe_fac = re.sub(r'[\\/:*?"<>|]+', "_", short)
+    # サニタイズ（&lt;/&gt; 等の HTML エンティティは不要）
+    safe_fac   = re.sub(r'[\\/:*?"<>|]+', "_", short)
     safe_month = re.sub(r'[\\/:*?"<>|]+', "_", month_text or "unknown_month")
     d = OUTPUT_ROOT / safe_fac / safe_month
     with time_section(f"mkdir outdir: {d}"): safe_mkdir(d)
@@ -765,10 +779,10 @@ def summaries_changed(prev, cur) -> bool:
 def save_calendar_assets(cal_root, outdir: Path, save_ts: bool):
     print("[TIMER] save_calendar_assets: start", flush=True)
     latest_html = outdir / "calendar.html"
-    latest_png = outdir / "calendar.png"
+    latest_png  = outdir / "calendar.png"
     ts = _dt.now().strftime("%Y%m%d_%H%M%S")
     html_ts = outdir / f"calendar_{ts}.html"
-    png_ts = outdir / f"calendar_{ts}.png"
+    png_ts  = outdir / f"calendar_{ts}.png"
     dump_calendar_html(cal_root, latest_html)
     take_calendar_screenshot(cal_root, latest_png)
     ts_html=ts_png=None
@@ -804,7 +818,8 @@ def _is_japanese_holiday(dt: datetime.date) -> bool:
     except Exception: return False
 _STATUS_EMOJI = {"×":"✖️","△":"🔼","○":"⭕️","未判定":"❓"}
 def _decorate_status(st: str) -> str:
-    st = st or "未判定"; return _STATUS_EMOJI.get(st, "❓")
+    st = st or "未判定"
+    return _STATUS_EMOJI.get(st, "❓")
 
 def build_aggregate_lines(month_text: str, prev_details: List[Dict[str,str]], cur_details: List[Dict[str,str]]) -> List[str]:
     ym = _parse_month_text(month_text)
@@ -830,7 +845,7 @@ def build_aggregate_lines(month_text: str, prev_details: List[Dict[str,str]], cu
             wd = _weekday_jp(dt)
             wd_part = f"{wd}・祝" if _is_japanese_holiday(dt) else wd
             prev_fmt = _decorate_status(prev_st)
-            cur_fmt = _decorate_status(cur_st)
+            cur_fmt  = _decorate_status(cur_st)
             line = f"{y}年{mo}月{di}日 ({wd_part}) : {prev_fmt} → {cur_fmt}"
             lines.append(line)
     return lines
@@ -914,7 +929,9 @@ def process_one_facility_cycle(page, facility_cfg: Dict[str, Any], config: Dict[
     print(f"[INFO] saved: {fac_name} - {month_text} latest=({latest_html.name},{latest_png.name})", flush=True)
     lines = build_aggregate_lines(month_text, prev_details, details)
     if lines:
-        send_aggregate_lines(DISCORD_WEBHOOK_URL, short, month_text, lines)
+        # send_aggregate_lines(DISCORD_WEBHOOK_URL, short, month_text, lines)
+        pass  # 必要に応じて通知を有効化
+
     shifts = facility_cfg.get("month_shifts", [0,1])
     shifts = sorted(set(int(s) for s in shifts if isinstance(s,(int,float))))
     if 0 not in shifts: shifts.insert(0,0)
@@ -951,16 +968,12 @@ def process_one_facility_cycle(page, facility_cfg: Dict[str, Any], config: Dict[
             print(f"[INFO] summary({fac_name} - {month_text2}): ○={summary2['○']} △={summary2['△']} ×={summary2['×']} 未判定={summary2['未判定']}", flush=True)
             if ts_html2 and ts_png2: print(f"[INFO] saved (timestamped): {ts_html2.name}, {ts_png2.name}", flush=True)
             print(f"[INFO] saved: {fac_name} - {month_text2} latest=({latest_html2.name},{latest_png2.name})", flush=True)
-            lines2 = build_aggregate_lines(month_text2, prev_details2, details2)
-            if lines2:
-                send_aggregate_lines(DISCORD_WEBHOOK_URL, short, month_text2, lines2)
         cal_root = cal_root2
         prev_month_text = month_text2
 
-    # ---- 『戻る』クリック → ★館一覧復帰確認レース（新設） ----
+    # ---- 『戻る』クリック → 館一覧復帰確認レース ----
     with time_section("back-to-list click"):
         clicked = click_back_to_list(page, timeout_ms=1500)
-
     if not clicked:
         print("[WARN] 『戻る/もどる』のクリック候補が見つからず。共通導線から再入します。", flush=True)
         navigate_to_common_list(page, config)
@@ -985,7 +998,6 @@ def run_monitor_flow():
     print("[INFO] run_monitor_flow: start", flush=True)
     print(f"[INFO] BASE_DIR={BASE_DIR} cwd={Path.cwd()} OUTPUT_ROOT={OUTPUT_ROOT}", flush=True)
     with time_section("ensure_root_dir"): ensure_root_dir(OUTPUT_ROOT)
-
     try:
         with time_section("load_config"): config = load_config()
     except Exception as e:
@@ -1032,14 +1044,20 @@ def main():
     parser.add_argument("--force", action="store_true", help="監視時間外でも強制実行")
     args = parser.parse_args()
 
+    # ★ 分付きゲートを使用
     force = MONITOR_FORCE or args.force
-    within, now = is_within_monitoring_window(MONITOR_START_HOUR, MONITOR_END_HOUR)
+    within, now = is_within_monitoring_window(MONITOR_START_HOUR, MONITOR_END_HOUR, MONITOR_END_MINUTE)
+
     if not force:
-        if now: print(f"[INFO] JST now: {now.strftime('%Y-%m-%d %H:%M:%S')} (window {MONITOR_START_HOUR}:00-{MONITOR_END_HOUR}:59)", flush=True)
+        if now:
+            print(f"[INFO] JST now: {now.strftime('%Y-%m-%d %H:%M:%S')} "
+                  f"(window {MONITOR_START_HOUR}:00-{MONITOR_END_HOUR}:{MONITOR_END_MINUTE:02d})", flush=True)
         if not within:
-            print("[INFO] outside monitoring window. exit.", flush=True); sys.exit(0)
+            print("[INFO] outside monitoring window. exit.", flush=True)
+            sys.exit(0)
     else:
-        if now: print(f"[INFO] FORCE RUN enabled. JST now: {now.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+        if now:
+            print(f"[INFO] FORCE RUN enabled. JST now: {now.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
 
     cfg = load_config()
     if args.facility:
