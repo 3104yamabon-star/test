@@ -138,34 +138,7 @@ jobs:
       - name: Validate config.json
         run: |
           python -m json.tool config.json > /dev/null
-
-      # === ここから Discord Webhook の事前診断（403切り分け用） ===
-      # --- URL 長さチェック（Secretsは表示不能だが長さは安全に確認できる） ---
-      - name: Preflight | Check Webhook URL length
-        shell: bash
-        run: |
-          if [ -z "${DISCORD_WEBHOOK_URL}" ]; then
-            echo "[ERROR] DISCORD_WEBHOOK_URL is empty (secret missing)." && exit 1
-          fi
-          echo "[INFO] Webhook URL length = ${#DISCORD_WEBHOOK_URL}"
-          if [ ${#DISCORD_WEBHOOK_URL} -lt 80 ]; then
-            echo "[WARN] Webhook URL looks too short. It may be broken/cut." 
-          fi
-
-      # --- 事前軽量テスト投稿（contentのみ）。失敗してもパイプラインは継続 ---
-      - name: Preflight | Ping Discord Webhook (non-blocking)
-        shell: bash
-        run: |
-          set +e
-          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${DISCORD_WEBHOOK_URL}" \
-                 -H "Content-Type: application/json" \
-                 -d '{"content":"[preflight] GitHub Actions can reach this Webhook."}')
-          echo "[INFO] Preflight webhook POST HTTP ${code}"
-          if [ "$code" -ne 200 ] && [ "$code" -ne 204 ]; then
-            echo "[WARN] Preflight POST did not succeed (HTTP ${code}). Continuing workflow for monitor run."
-          fi
-      # === 事前診断ここまで ===
-
+     
       # --- 監視実行（レポジトリ直下 snapshots/ に保存） ---
       - name: Run monitor (force)
         env:
