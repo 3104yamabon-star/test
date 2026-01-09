@@ -633,8 +633,8 @@ def _summarize_vacancies_fallback(page, calendar_root, config):
         return summary, details
 
 def facility_month_dir(short: str, month_text: str) -> Path:
-    safe_fac = re.sub(r"[\\"/:*?\"<>|]+", "_", short)
-    safe_month = re.sub(r"[\\"/:*?\"<>|]+", "_", month_text or "unknown_month")
+    safe_fac   = re.sub(r'[\\/:*?"<>|]+', "_", short)
+    safe_month = re.sub(r'[\\/:*?"<>|]+', "_", month_text or "unknown_month")
     d = OUTPUT_ROOT / safe_fac / safe_month
     with time_section(f"mkdir outdir: {d}"): safe_mkdir(d)
     return d
