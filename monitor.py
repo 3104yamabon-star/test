@@ -2,15 +2,19 @@
 # -*- coding: utf-8 -*-
 """
 さいたま市 施設予約システムの空き状況監視（計測＋任意ダイアログ高速版）
-
 追加・変更点（今回の主目的）:
 - goto直後の「任意ダイアログ（同意/OK/確認/閉じる）」処理を超軽量化
   * 存在チェック(count)→クリック(timeout 300–500ms) の高速ルート
   * ラベルごとの区間計測ログを追加（どこで何秒使ったか可視化）
 - Playwrightの既定タイムアウトを5秒に短縮（page.set_default_timeout(5000)）
 - それ以外の機能（カレンダー枠の限定、日付セルのみ、次月への絶対日付遷移、差分時のみ履歴保存、詳細タイマー）は現状維持
-"""
 
+★ 今回のご要望対応:
+- 空き状況を表示した段階（月の遷移も含む）で約1.5秒の猶予を追加
+  * 環境変数 GRACE_MS（既定 1500ms）で調整可能
+  * navigate_to_facility() のクリックシーケンス完了直後に待機
+  * click_next_month() でDOM更新待ちが済んだ直後に待機
+"""
 import os
 import sys
 import json
@@ -20,7 +24,6 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
-
 from playwright.sync_api import sync_playwright
 
 # ====== 環境 ======
@@ -35,6 +38,9 @@ MONITOR_FORCE = os.getenv("MONITOR_FORCE", "0").strip() == "1"
 MONITOR_START_HOUR = int(os.getenv("MONITOR_START_HOUR", "5"))
 MONITOR_END_HOUR = int(os.getenv("MONITOR_END_HOUR", "23"))
 TIMING_VERBOSE = os.getenv("TIMING_VERBOSE", "0").strip() == "1"
+
+# ★ 追加: 画面安定化のための猶予（ミリ秒）
+GRACE_MS = int(os.getenv("GRACE_MS", "1500"))
 
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_ROOT = Path(os.getenv("OUTPUT_DIR", str(BASE_DIR / "snapshots"))).resolve()
@@ -97,6 +103,18 @@ def safe_element_screenshot(el, out: Path):
     out.parent.mkdir(parents=True, exist_ok=True)
     el.scroll_into_view_if_needed(); el.screenshot(path=str(out))
 
+# ====== 画面安定化用ヘルパー（★追加） ======
+def grace_pause(page, label: str = "grace wait"):
+    """画面の安定化待ち（既定 1.5s）。GRACE_MS で調整可能。"""
+    try:
+        ms = max(0, int(GRACE_MS))
+    except Exception:
+        ms = 1500
+    if ms <= 0:
+        return
+    with time_section(f"{label} ({ms}ms)"):
+        page.wait_for_timeout(ms)
+
 # ====== Playwright操作 ======
 def try_click_text(page, label: str, timeout_ms: int = 15000, quiet=True) -> bool:
     locators = [
@@ -135,7 +153,6 @@ def click_optional_dialogs_fast(page) -> None:
     for label in OPTIONAL_DIALOG_LABELS:
         with time_section(f"optional-dialog: '{label}'"):
             clicked = False
-
             # まず role=link / role=button / exact text を素早く count()
             probes = [
                 page.get_by_role("link", name=label, exact=True),
@@ -158,7 +175,6 @@ def click_optional_dialogs_fast(page) -> None:
                             pass
                 except Exception:
                     pass
-
             # それでも未クリックなら、部分一致をさらに素早く試す（300ms）
             if not clicked:
                 try:
@@ -169,18 +185,14 @@ def click_optional_dialogs_fast(page) -> None:
                         clicked = True
                 except Exception:
                     pass
-
             # クリックできてもできなくても「短時間で」抜けるのが目的
-            # 何もしない（ログだけ残す）
 
 def navigate_to_facility(page, facility: Dict[str, Any]) -> None:
     if not BASE_URL:
         raise RuntimeError("BASE_URL が未設定です。Secrets の BASE_URL に https://saitama.rsv.ws-scs.jp/web/ を設定してください。")
-
     with time_section("goto BASE_URL"):
         page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_load_state("domcontentloaded", timeout=30000)
-
     # 既定タイムアウトを短縮（局所で延ばす方針）
     page.set_default_timeout(5000)  # ★ 30s → 5s
 
@@ -193,6 +205,9 @@ def navigate_to_facility(page, facility: Dict[str, Any]) -> None:
             ok = try_click_text(page, label, timeout_ms=5000)
             if not ok:
                 raise RuntimeError(f"クリック対象が見つかりません：『{label}』（施設: {facility.get('name','')}）")
+
+    # ★ 追加: 空き状況画面を開いた直後の安定化猶予
+    grace_pause(page, label="after availability view shown")
 
 def get_current_year_month_text(page, calendar_root=None) -> Optional[str]:
     pat = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月")
@@ -249,7 +264,7 @@ def locate_calendar_root(page, hint: str, facility: Dict[str, Any] = None):
         candidates.sort(key=lambda x:x[0], reverse=True)
         return candidates[0][1]
 
-def dump_calendar_html(calendar_root, out_path: Path): 
+def dump_calendar_html(calendar_root, out_path: Path):
     with time_section(f"dump_html: {out_path.name}"):
         html = calendar_root.evaluate("el => el.outerHTML")
         safe_write_text(out_path, html)
@@ -309,6 +324,7 @@ def click_next_month(page, label_primary="次の月", calendar_root=None, prev_m
                 if el and el.count() > 0:
                     _safe_click(el, sel); clicked = True; break
             except Exception: pass
+
         if not clicked and prev_month_text:
             try:
                 target = _next_yyyymm01(prev_month_text)
@@ -319,7 +335,7 @@ def click_next_month(page, label_primary="次の月", calendar_root=None, prev_m
                 if m: cur01 = f"{int(m.group(1)):04d}{int(m.group(2)):02d}01"
                 for e in els:
                     href = e.get_attribute("href") or ""
-                    m2 = re.search(r"moveCalender\([^,]+,[^,]+,\s*(\d{8})\)", href)
+                    m2 = re.search(r"moveCalender\([^\,]+,[^\,]+,\s*(\d{8})\)", href)
                     if not m2: continue
                     ymd = m2.group(1)
                     if target and ymd == target: chosen, chosen_date = e, ymd; break
@@ -328,6 +344,7 @@ def click_next_month(page, label_primary="次の月", calendar_root=None, prev_m
                 if chosen:
                     _safe_click(chosen, f"href {chosen_date}"); clicked = True
             except Exception: pass
+
         if not clicked: return False
 
     with time_section("next-month: wait outerHTML change"):
@@ -338,7 +355,11 @@ def click_next_month(page, label_primary="次の月", calendar_root=None, prev_m
         try:
             if old_html:
                 page.wait_for_function(
-                    """(old)=>{const r=document.querySelector('table.reservation-calendar')||document.querySelector('[role="grid"]')||document.querySelector('table');return r && r.outerHTML!==old;}""",
+                    """(old)=>{const r=document.querySelector('table.reservation-calendar')
+
+document.querySelector('[role="grid"]')
+
+document.querySelector('table');return r && r.outerHTML!==old;}""",
                     arg=old_html, timeout=wait_timeout_ms
                 )
         except Exception: pass
@@ -348,7 +369,9 @@ def click_next_month(page, label_primary="次の月", calendar_root=None, prev_m
         try:
             if goal:
                 page.wait_for_function(
-                    """(g)=>{const t=document.body.innerText||'';return t.includes(g);}""",
+                    """(g)=>{const t=document.body.innerText
+
+'';return t.includes(g);}""",
                     arg=goal, timeout=wait_timeout_ms
                 )
         except Exception: pass
@@ -360,11 +383,14 @@ def click_next_month(page, label_primary="次の月", calendar_root=None, prev_m
         if prev_month_text and cur and not _is_forward(prev_month_text, cur):
             print(f"[WARN] next-month moved backward: {prev_month_text} -> {cur}", flush=True)
             return False
+
+    # ★ 追加: 月遷移直後の安定化猶予
+    grace_pause(page, label="after month transition")
+
     return True
 
 # ====== 集計 / 保存 ======
 from datetime import datetime as _dt
-
 def summarize_vacancies(page, calendar_root, config):
     with time_section("summarize_vacancies"):
         import re as _re
@@ -451,10 +477,10 @@ def summaries_changed(prev, cur) -> bool:
 
 def save_calendar_assets(cal_root, outdir: Path, save_ts: bool):
     latest_html = outdir / "calendar.html"
-    latest_png  = outdir / "calendar.png"
+    latest_png = outdir / "calendar.png"
     ts = _dt.now().strftime("%Y%m%d_%H%M%S")
     html_ts = outdir / f"calendar_{ts}.html"
-    png_ts  = outdir / f"calendar_{ts}.png"
+    png_ts = outdir / f"calendar_{ts}.png"
     dump_calendar_html(cal_root, latest_html)
     take_calendar_screenshot(cal_root, latest_png)
     ts_html=ts_png=None
@@ -467,7 +493,7 @@ def save_calendar_assets(cal_root, outdir: Path, save_ts: bool):
 # ====== メイン ======
 def run_monitor():
     print("[INFO] run_monitor: start", flush=True)
-    print(f"[INFO] BASE_DIR={BASE_DIR}  cwd={Path.cwd()}  OUTPUT_ROOT={OUTPUT_ROOT}", flush=True)
+    print(f"[INFO] BASE_DIR={BASE_DIR} cwd={Path.cwd()} OUTPUT_ROOT={OUTPUT_ROOT}", flush=True)
     with time_section("ensure_root_dir"): ensure_root_dir(OUTPUT_ROOT)
     try:
         with time_section("load_config"): config = load_config()
@@ -508,10 +534,9 @@ def run_monitor():
                 }
                 with time_section("write status_counts.json"):
                     safe_write_text(outdir / "status_counts.json", json.dumps(payload, ensure_ascii=False, indent=2))
-
                 print(f"[INFO] summary({facility.get('name','')} - {month_text}): ○={summary['○']} △={summary['△']} ×={summary['×']} 未判定={summary['未判定']}", flush=True)
                 if ts_html and ts_png: print(f"[INFO] saved (timestamped): {ts_html.name}, {ts_png.name}", flush=True)
-                print(f"[INFO] saved: {facility.get('name','')} - {month_text}  latest=({latest_html.name},{latest_png.name})", flush=True)
+                print(f"[INFO] saved: {facility.get('name','')} - {month_text} latest=({latest_html.name},{latest_png.name})", flush=True)
 
                 shifts = facility.get("month_shifts", [0,1])
                 shifts = sorted(set(int(s) for s in shifts if isinstance(s,(int,float))))
@@ -526,6 +551,7 @@ def run_monitor():
                             page.screenshot(path=str(dbg / f"failed_next_month_step{step}_{short}.png"))
                         print(f"[WARN] next-month click failed at step={step}", flush=True)
                         break
+
                     with time_section(f"get_current_month_text(step={step})"):
                         month_text2 = get_current_year_month_text(page) or f"shift_{step}"
                     print(f"[INFO] month(step={step}): {month_text2}", flush=True)
@@ -539,6 +565,7 @@ def run_monitor():
                         prev2 = load_last_summary(outdir2)
                         changed2 = summaries_changed(prev2, summary2)
                         latest_html2, latest_png2, ts_html2, ts_png2 = save_calendar_assets(cal_root2, outdir2, save_ts=changed2)
+
                         payload2 = {
                             "month": month_text2, "facility": facility.get('name',''),
                             "summary": summary2, "details": details2,
@@ -548,7 +575,7 @@ def run_monitor():
                             safe_write_text(outdir2 / "status_counts.json", json.dumps(payload2, ensure_ascii=False, indent=2))
                         print(f"[INFO] summary({facility.get('name','')} - {month_text2}): ○={summary2['○']} △={summary2['△']} ×={summary2['×']} 未判定={summary2['未判定']}", flush=True)
                         if ts_html2 and ts_png2: print(f"[INFO] saved (timestamped): {ts_html2.name}, {ts_png2.name}", flush=True)
-                        print(f"[INFO] saved: {facility.get('name','')} - {month_text2}  latest=({latest_html2.name},{latest_png2.name})", flush=True)
+                        print(f"[INFO] saved: {facility.get('name','')} - {month_text2} latest=({latest_html2.name},{latest_png2.name})", flush=True)
 
                     cal_root = cal_root2; prev_month_text = month_text2
 
@@ -558,7 +585,7 @@ def run_monitor():
                 with time_section("screenshot exception"):
                     try: page.screenshot(path=str(shot))
                     except Exception: pass
-                print(f"[ERROR] run_monitor: 施設処理中に例外: {e}  (debug: {shot})", flush=True)
+                print(f"[ERROR] run_monitor: 施設処理中に例外: {e} (debug: {shot})", flush=True)
                 continue
 
         browser.close()
@@ -592,6 +619,6 @@ def main():
 
 if __name__ == "__main__":
     print("[INFO] Starting monitor.py ...", flush=True)
-    print(f"[INFO] BASE_DIR={BASE_DIR}  cwd={Path.cwd()}  OUTPUT_ROOT={OUTPUT_ROOT}", flush=True)
+    print(f"[INFO] BASE_DIR={BASE_DIR} cwd={Path.cwd()} OUTPUT_ROOT={OUTPUT_ROOT}", flush=True)
     main()
     print("[INFO] monitor.py finished.", flush=True)
