@@ -930,8 +930,7 @@ def process_one_facility_cycle(page, facility_cfg: Dict[str, Any], config: Dict[
     lines = build_aggregate_lines(month_text, prev_details, details)
     if lines:
          send_aggregate_lines(DISCORD_WEBHOOK_URL, short, month_text, lines)
-        pass  # 必要に応じて通知を有効化
-
+   
     shifts = facility_cfg.get("month_shifts", [0,1])
     shifts = sorted(set(int(s) for s in shifts if isinstance(s,(int,float))))
     if 0 not in shifts: shifts.insert(0,0)
