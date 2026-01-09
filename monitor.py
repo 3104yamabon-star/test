@@ -24,6 +24,40 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
 from playwright.sync_api import sync_playwright
 
+
+# --- 通知ユーティリティ（最小版） ---
+def send_text(webhook_url: str, content: str) -> None:
+    """
+    Discord Webhook へシンプルなテキストを送る最小関数。
+    ランタイムに requests が無い環境でも、標準ライブラリで送ります。
+    """
+    if not webhook_url:
+        print("[WARN] DISCORD_WEBHOOK_URL が未設定のため送信しません。", flush=True)
+        return
+    try:
+        import json as _json
+        import urllib.request as _req
+
+        data = _json.dumps({"content": content}).encode("utf-8")
+        req = _req.Request(
+            webhook_url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _req.urlopen(req, timeout=5) as resp:
+            _ = resp.read()
+    except Exception as e:
+        print(f"[ERROR] Discord 送信失敗: {e}", flush=True)
+
+
+def send_aggregate_lines(webhook_url: str, short: str, month_text: str, lines: list[str]) -> None:
+    """
+    改善検知の集合を整形してまとめて投稿。
+    """
+    if not lines:
+
+
 # ====== 環境 ======
 try:
     import pytz
