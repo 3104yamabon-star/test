@@ -563,19 +563,40 @@ def run_monitor():
 
                 fshort = FACILITY_TITLE_ALIAS.get(facility.get('name',''), facility.get('name',''))
                 outdir = facility_month_dir(fshort or 'unknown_facility', month_text)
-                dump_calendar_html(cal_root, outdir / 'calendar.html')
-                take_calendar_screenshot(cal_root, outdir / 'calendar.png')
-                print(f"[INFO] saved: {facility.get('name','')} - {month_text}", flush=True)
+                
+# 旧:
+# dump_calendar_html(cal_root, outdir / 'calendar.html')
+# take_calendar_screenshot(cal_root, outdir / 'calendar.png')
+# ...
+# summary, details = summarize_vacancies(page, cal_root, config)
+# (outdir / "status_counts.json").write_text(...)
 
-                # ★ 当月の空き状況集計（JSON/CSV/ログ）
-                try:
-                    summary, details = summarize_vacancies(page, cal_root, config)
-                    (outdir / "status_counts.json").write_text(
-                        json.dumps({"month": month_text, "facility": facility.get('name',''),
-                                    "summary": summary, "details": details},
-                                   ensure_ascii=False, indent=2),
-                        "utf-8"
-                    )
+# 新: まず要約を計算
+summary, details = summarize_vacancies(page, cal_root, config)
+
+# 既存のJSONを読み込み、今回と比較
+prev_summary = load_last_summary(outdir)
+changed = summaries_changed(prev_summary, summary)
+
+# 変化判定に応じて保存
+save_calendar_assets(cal_root, outdir, save_timestamped=changed)
+
+# 要約JSONは毎回更新（最新を真）
+(outdir / "status_counts.json").write_text(
+    json.dumps(
+        {"month": month_text, "facility": facility.get('name',''),
+         "summary": summary, "details": details},
+        ensure_ascii=False, indent=2
+    ),
+    "utf-8"
+)
+
+print(
+    f"[INFO] summary({facility.get('name','')} - {month_text}): "
+    f"○={summary['○']} △={summary['△']} ×={summary['×']} 未判定={summary['未判定']}",
+    flush=True
+)
+
                     import csv
                     with (outdir / "status_details.csv").open("w", newline="", encoding="utf-8") as fcsv:
                         w = csv.writer(fcsv)
