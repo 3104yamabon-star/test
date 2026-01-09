@@ -13,7 +13,6 @@ jobs:
   monitor:
     runs-on: ubuntu-latest
 
-    # 同時実行を制限（重複起動で競合しないように）
     concurrency:
       group: facility-monitor
       cancel-in-progress: false
@@ -21,7 +20,7 @@ jobs:
     env:
       PYTHONUNBUFFERED: "1"
       OUTPUT_DIR: snapshots
-      # Playwright ブラウザのキャッシュディレクトリ（標準）
+      # Playwright がブラウザを置く場所を明示（キャッシュ対象）
       PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
 
     steps:
@@ -29,13 +28,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # --- Python をセットアップ（バージョンは必要に応じて固定化可能） ---
+      # --- Python をセットアップ ---
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # --- pip キャッシュ（高速化） ---
+      # --- pip キャッシュ ---
       - name: Cache pip
         uses: actions/cache@v4
         with:
@@ -44,14 +43,68 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      # --- Playwright ブラウザをキャッシュ（初回のみダウンロード、以降は再利用） ---
+      # --- Playwright ブラウザのキャッシュ用ディレクトリを事前作成 ---
+      - name: Prepare Playwright cache dir
+        run: mkdir -p ~/.cache/ms-playwright
+
+      # --- 依存のインストール（Playwright 本体も） ---
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          # Playwright 本体が requirements.txt に無ければフォールバックで入れる
+          python - <<'PY'
+          import subprocess, sys
+          try:
+              import playwright  # noqa
+              print("[INFO] playwright package is present.")
+          except Exception:
+              print("[INFO] playwright not found; installing...")
+              subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright==1.46.0"])
+          PY
+
+      # --- Playwright バージョンに応じたキャッシュキーを生成 ---
+      - name: Compute Playwright cache key
+        id: pw
+        shell: bash
+        run: |
+          set -e
+          PW_VER=$(python - <<'PY'
+          import playwright, sys
+          print(playwright.__version__)
+          PY
+          )
+          echo "Playwright version: ${PW_VER}"
+          echo "version=${PW_VER}" >> "$GITHUB_OUTPUT"
+
+      # --- Playwright ブラウザのキャッシュ（バージョン連動） ---
       - name: Cache Playwright browsers
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-msplaywright-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-msplaywright-${{ steps.pw.outputs.version }}
           restore-keys: |
             ${{ runner.os }}-msplaywright-
+          save-always: true
+
+      # --- 既にブラウザがあるか確認して、あれば install スキップ ---
+      - name: Check cached browsers
+        id: have_browsers
+        shell: bash
+        run: |
+          if compgen -G "${HOME}/.cache/ms-playwright/chromium-*" > /dev/null; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "[INFO] Cached Chromium browsers found; skipping install."
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "[INFO] No cached Chromium browsers found; will install."
+          fi
+
+      # --- Playwright ブラウザのインストール（初回のみ）。依存は既に入っているので --with-deps は不要 ---
+      - name: Install Playwright browsers (Chromium)
+        if: steps.have_browsers.outputs.found == 'false'
+        run: |
+          # 依存が未導入のケースに備え、Ubuntu標準runnerなら通常済みなので軽量化
+          python -m playwright install chromium
 
       # --- ワークスペース情報（任意のデバッグ） ---
       - name: Show workspace info
@@ -68,25 +121,6 @@ jobs:
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-
-      # --- 依存のインストール ---
-      - name: Install dependencies
-        run: |
-          pip install -r requirements.txt
-          # Playwright 本体が requirements.txt にない場合のフォールバック
-          python - <<'PY'
-          import subprocess, sys
-          try:
-              import playwright  # noqa
-          except Exception:
-              print("[INFO] playwright not found in environment; installing...")
-              subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright"])
-          PY
-
-      # --- Playwright ブラウザのセットアップ（Chromiumのみ） ---
-      - name: Install Playwright browsers (Chromium)
-        run: |
-          python -m playwright install --with-deps chromium
 
       # --- config.json の整合性チェック ---
       - name: Validate config.json
@@ -120,7 +154,6 @@ jobs:
         run: |
           echo "----- git check-ignore -----"
           git check-ignore -v "${OUTPUT_DIR}" "${OUTPUT_DIR}/**" || true
-          # .gitignore に書かれていても強制追加
           git add -f "${OUTPUT_DIR}/" || true
 
       # --- Commit & Push （差分が無ければ空コミットで履歴を残す） ---
