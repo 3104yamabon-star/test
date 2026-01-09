@@ -21,6 +21,8 @@ jobs:
       PYTHONUNBUFFERED: "1"
       OUTPUT_DIR: snapshots
       PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
+      # ★ 追加：ジョブ共通 env に Webhook を渡す（診断や本処理で参照可能）
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
     steps:
       # --- リポジトリチェックアウト ---
@@ -61,7 +63,7 @@ jobs:
               subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright==1.46.0"])
           PY
 
-      # --- Playwright バージョンに応じたキャッシュキーを生成（__version__は使わない） ---
+      # --- Playwright バージョンに応じたキャッシュキーを生成 ---
       - name: Compute Playwright cache key
         id: pw
         shell: bash
@@ -114,7 +116,6 @@ jobs:
       - name: Install Playwright browsers (Chromium)
         if: steps.have_browsers.outputs.found == 'false'
         run: |
-          # 依存が未導入のケースに備えて --with-deps を付けても良いですが、既に runner 依存が満たされることが多いです
           python -m playwright install chromium
 
       # --- ワークスペース情報（任意のデバッグ） ---
@@ -138,12 +139,40 @@ jobs:
         run: |
           python -m json.tool config.json > /dev/null
 
+      # === ここから Discord Webhook の事前診断（403切り分け用） ===
+      # --- URL 長さチェック（Secretsは表示不能だが長さは安全に確認できる） ---
+      - name: Preflight | Check Webhook URL length
+        shell: bash
+        run: |
+          if [ -z "${DISCORD_WEBHOOK_URL}" ]; then
+            echo "[ERROR] DISCORD_WEBHOOK_URL is empty (secret missing)." && exit 1
+          fi
+          echo "[INFO] Webhook URL length = ${#DISCORD_WEBHOOK_URL}"
+          if [ ${#DISCORD_WEBHOOK_URL} -lt 80 ]; then
+            echo "[WARN] Webhook URL looks too short. It may be broken/cut." 
+          fi
+
+      # --- 事前軽量テスト投稿（contentのみ）。失敗してもパイプラインは継続 ---
+      - name: Preflight | Ping Discord Webhook (non-blocking)
+        shell: bash
+        run: |
+          set +e
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${DISCORD_WEBHOOK_URL}" \
+                 -H "Content-Type: application/json" \
+                 -d '{"content":"[preflight] GitHub Actions can reach this Webhook."}')
+          echo "[INFO] Preflight webhook POST HTTP ${code}"
+          if [ "$code" -ne 200 ] && [ "$code" -ne 204 ]; then
+            echo "[WARN] Preflight POST did not succeed (HTTP ${code}). Continuing workflow for monitor run."
+          fi
+      # === 事前診断ここまで ===
+
       # --- 監視実行（レポジトリ直下 snapshots/ に保存） ---
       - name: Run monitor (force)
         env:
           OUTPUT_DIR: ${{ env.OUTPUT_DIR }}
           BASE_URL: ${{ secrets.BASE_URL }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # ★ ここでも渡すが、ジョブ共通envに既に設定済み
+          DISCORD_WEBHOOK_URL: ${{ env.DISCORD_WEBHOOK_URL }}
           MONITOR_FORCE: "1"
           GRACE_MS: "1500"
         run: |
