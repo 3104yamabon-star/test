@@ -1,16 +1,18 @@
+
 # -*- coding: utf-8 -*-
 """
 さいたま市 施設予約システムの空き状況監視
 
-機能概要:
+主な機能/変更点:
 - 監視時間帯の制御（--force / MONITOR_FORCE）
 - 施設ページ遷移（click_sequence）
 - カレンダー枠の厳密特定（calendar_selector 優先、曜日＋セル数チェック）
 - セル抽出は枠内限定、日付が無いセルはスキップ
 - 「次の月」遷移の厳密化（'次の月' 厳密一致 → moveCalender(..., YYYYMMDD) の日付一致）
-- 待機は outerHTML 変化検知を優先、補助で月テキスト変化（+1方向を確認）
-- summary 変化時のみタイムスタンプ付き履歴保存（最新は常に更新）
+- 保存処理の厳格化（書込みテスト/存在確認/失敗は例外で停止）
+- タイムスタンプ秒単位で履歴ファイル名生成（同一分上書き回避）
 - 不要リソースのロード抑制で高速化
+- 詳細ログ（BASE_DIR / cwd / outdir / 絶対パス）出力
 
 環境変数（GitHub Secrets想定）:
 - BASE_URL                例: "https://saitama.rsv.ws-scs.jp/web/"
@@ -18,6 +20,7 @@
 - MONITOR_FORCE           "1" なら時間帯ガード無効化
 - MONITOR_START_HOUR      JSTの開始時刻（整数、デフォルト 5）
 - MONITOR_END_HOUR        JSTの終了時刻（整数、デフォルト 23）
+- OUTPUT_DIR              出力先ルート（省略時 snapshots）
 """
 
 import os
@@ -44,9 +47,9 @@ MONITOR_FORCE = os.getenv("MONITOR_FORCE", "0").strip() == "1"
 MONITOR_START_HOUR = int(os.getenv("MONITOR_START_HOUR", "5"))
 MONITOR_END_HOUR = int(os.getenv("MONITOR_END_HOUR", "23"))
 
-# === パス ===
+# === 出力パス ===
 BASE_DIR = Path(__file__).resolve().parent
-SNAP_DIR = BASE_DIR / "snapshots"
+OUTPUT_ROOT = Path(os.getenv("OUTPUT_DIR", str(BASE_DIR / "snapshots"))).resolve()
 CONFIG_PATH = BASE_DIR / "config.json"
 
 # === 施設短縮名 ===
@@ -60,22 +63,6 @@ FACILITY_TITLE_ALIAS = {
 # ------------------------------
 # 基本ユーティリティ
 # ------------------------------
-def ensure_dirs() -> None:
-    SNAP_DIR.mkdir(parents=True, exist_ok=True)
-
-def load_config() -> Dict[str, Any]:
-    """純粋JSONとして config.json をロードし、最低限のキーを検証"""
-    try:
-        text = CONFIG_PATH.read_text("utf-8")
-        cfg = json.loads(text)
-    except json.JSONDecodeError as e:
-        print(f"[ERROR] config.json の読み込みに失敗: {e}", flush=True)
-        raise
-    for key in ["facilities", "status_patterns", "css_class_patterns"]:
-        if key not in cfg:
-            raise RuntimeError(f"config.json の '{key}' が不足しています")
-    return cfg
-
 def jst_now() -> datetime.datetime:
     if pytz is None:
         return datetime.datetime.now()
@@ -89,6 +76,51 @@ def is_within_monitoring_window(start_hour: int = 5, end_hour: int = 23) -> Tupl
         return (start_hour <= now.hour <= end_hour), now
     except Exception:
         return True, None  # 失敗時は実行
+
+def load_config() -> Dict[str, Any]:
+    """純粋JSONとして config.json をロードし、最低限のキーを検証"""
+    text = CONFIG_PATH.read_text("utf-8")
+    cfg = json.loads(text)
+    for key in ["facilities", "status_patterns", "css_class_patterns"]:
+        if key not in cfg:
+            raise RuntimeError(f"config.json の '{key}' が不足しています")
+    return cfg
+
+def ensure_root_dir(root: Path) -> None:
+    """
+    出力ルート（OUTPUT_ROOT）を必ず作成し、書込みテストを行う。
+    失敗時は例外。
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    test_file = root / ".write_test"
+    test_file.write_text(f"ok {jst_now().isoformat()} \n", encoding="utf-8")
+    if not test_file.exists():
+        raise RuntimeError(f"OUTPUT_ROOT 書込みテストに失敗: {test_file}")
+    # 後始末（不要なら削除）
+    try:
+        test_file.unlink()
+    except Exception:
+        pass
+
+def safe_mkdir(dirpath: Path) -> None:
+    dirpath.mkdir(parents=True, exist_ok=True)
+    if not dirpath.exists():
+        raise RuntimeError(f"ディレクトリ作成に失敗: {dirpath}")
+
+def safe_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+    if not path.exists() or path.stat().st_size == 0:
+        raise RuntimeError(f"ファイル書込みに失敗: {path}")
+
+def safe_element_screenshot(el, out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    el.scroll_into_view_if_needed()
+    el.screenshot(path=str(out_path))
+    if not out_path.exists() or out_path.stat().st_size == 0:
+        raise RuntimeError(f"スクリーンショット作成に失敗: {out_path}")
 
 # ------------------------------
 # Playwright 操作（遷移）
@@ -161,11 +193,10 @@ def get_current_year_month_text(page, calendar_root=None) -> Optional[str]:
 
 def locate_calendar_root(page, hint: str, facility: Dict[str, Any] = None):
     """
-    カレンダー枠を厳密に特定する:
-    - config の calendar_selector があればそれを最優先
-    - グリッド候補は role=grid / table / div.calendar 等だが、
-      '曜日文字' と '十分なセル数(>=28)' を持つもののみ採用
-    - 失敗時は body にフォールバックせず例外を送出
+    カレンダー枠を厳密に特定:
+    - calendar_selector があれば最優先
+    - role=grid / table / div.calendar 等から、曜日文字/セル数でスコアリング
+    - 見つからなければ例外（body へのフォールバックはしない）
     """
     sel_cfg = (facility or {}).get("calendar_selector")
     if sel_cfg:
@@ -210,19 +241,6 @@ def locate_calendar_root(page, hint: str, facility: Dict[str, Any] = None):
 
     candidates.sort(key=lambda x: x[0], reverse=True)
     return candidates[0][1]
-
-def dump_calendar_html(calendar_root, out_path: Path) -> None:
-    """カレンダー要素の outerHTML を保存"""
-    try:
-        html = calendar_root.evaluate("el => el.outerHTML")
-        Path(out_path).write_text(html, "utf-8")
-    except Exception as e:
-        print(f"[WARN] calendar HTML dump 失敗: {e}", flush=True)
-
-def take_calendar_screenshot(calendar_root, out_path: Path) -> None:
-    """カレンダー要素のみスクリーンショット"""
-    calendar_root.scroll_into_view_if_needed()
-    calendar_root.screenshot(path=str(out_path))
 
 # ------------------------------
 # 月遷移（“次の月”の絶対日付だけをクリック）
@@ -302,7 +320,6 @@ def click_next_month(page,
     candidates = []
     if sel_cfg:
         candidates.append(sel_cfg)
-    # 同義語対応（画面差異用）
     candidates += ["a:has-text('次の月')", "a:has-text('翌月')"]
 
     for sel in candidates:
@@ -322,7 +339,6 @@ def click_next_month(page,
             els = page.locator("a[href*='moveCalender']").all()
             chosen = None
             chosen_date = None
-            # 現在月の 'YYYYMM01' を算出（比較用）
             m = re.match(r"(\d{4})年(\d{1,2})月", prev_month_text)
             cur_yyyymm01 = None
             if m:
@@ -334,12 +350,10 @@ def click_next_month(page,
                 if not m2:
                     continue
                 ymd = m2.group(1)  # YYYYMMDD
-                # まずは完全一致（翌月01日）を最優先
                 if target and ymd == target:
                     chosen = e
                     chosen_date = ymd
                     break
-                # 次点：当月より未来の最小日付（前月は除外）
                 if cur_yyyymm01 and ymd > cur_yyyymm01:
                     if chosen_date is None or ymd < chosen_date:
                         chosen = e
@@ -402,7 +416,6 @@ def click_next_month(page,
         cur_text = None
 
     if prev_month_text and cur_text and not _is_forward(prev_month_text, cur_text):
-        # “前の月”に行ってしまった場合は失敗扱い（上位でリトライ戦略を取るならそこで制御）
         return False
 
     return True
@@ -425,12 +438,10 @@ def summarize_vacancies(page, calendar_root, config) -> Tuple[Dict[str, int], li
         txt = (raw or "").strip()
         txt_norm = txt.replace("　", " ").lower()
 
-        # 記号の直接検出
         for ch in ["○", "〇", "△", "×"]:
             if ch in txt:
                 return {"〇": "○"}.get(ch, ch)
 
-        # パターン（キーワード）で検出
         for kw in patterns["circle"]:
             if kw.lower() in txt_norm:
                 return "○"
@@ -449,18 +460,14 @@ def summarize_vacancies(page, calendar_root, config) -> Tuple[Dict[str, int], li
 
     for i in range(cnt):
         el = candidates.nth(i)
-
-        # セル内テキスト
         try:
             txt = (el.inner_text() or "").strip()
         except Exception:
             continue
 
-        # 先頭付近で日付（1日, 2日 ...）を探す
         head = txt[:40]
         mday = _re.search(r"^([1-9]|[12]\d|3[01])\s*日", head, flags=_re.MULTILINE)
 
-        # aria-label/title に日付がある場合も補助検出
         if not mday:
             try:
                 aria = el.get_attribute("aria-label") or ""
@@ -469,7 +476,6 @@ def summarize_vacancies(page, calendar_root, config) -> Tuple[Dict[str, int], li
             except Exception:
                 pass
 
-        # img の alt/title も一応確認
         if not mday:
             try:
                 imgs = el.locator("img")
@@ -484,13 +490,10 @@ def summarize_vacancies(page, calendar_root, config) -> Tuple[Dict[str, int], li
             except Exception:
                 pass
 
-        # ★ 日付が無いセルはスキップ（ヘッダ・説明セル除外）
         if not mday:
             continue
 
         day_label = f"{mday.group(0)}"
-
-        # 状態判定：テキスト → 画像 → aria/title → class
         st = _status_from_text(txt)
 
         if not st:
@@ -517,18 +520,15 @@ def summarize_vacancies(page, calendar_root, config) -> Tuple[Dict[str, int], li
                 if not st:
                     for kw in config["css_class_patterns"]["circle"]:
                         if kw in cls:
-                            st = "○"
-                            break
+                            st = "○"; break
                 if not st:
                     for kw in config["css_class_patterns"]["triangle"]:
                         if kw in cls:
-                            st = "△"
-                            break
+                            st = "△"; break
                 if not st:
                     for kw in config["css_class_patterns"]["cross"]:
                         if kw in cls:
-                            st = "×"
-                            break
+                            st = "×"; break
             except Exception:
                 pass
 
@@ -548,8 +548,8 @@ from datetime import datetime as _dt
 def facility_month_dir(f_short: str, month_text: str) -> Path:
     safe_fac = re.sub(r"[\\/:*?\"<>|]+", "_", f_short)
     safe_month = re.sub(r"[\\/:*?\"<>|]+", "_", month_text or "unknown_month")
-    d = SNAP_DIR / safe_fac / safe_month
-    d.mkdir(parents=True, exist_ok=True)
+    d = OUTPUT_ROOT / safe_fac / safe_month
+    safe_mkdir(d)
     return d
 
 def load_last_summary(outdir: Path) -> Optional[Dict[str, int]]:
@@ -574,44 +574,51 @@ def summaries_changed(prev: Optional[Dict[str, int]], cur: Dict[str, int]) -> bo
     return False
 
 def dump_calendar_html(calendar_root, out_path: Path) -> None:
-    try:
-        html = calendar_root.evaluate("el => el.outerHTML")
-        Path(out_path).write_text(html, "utf-8")
-    except Exception as e:
-        print(f"[WARN] calendar HTML dump 失敗: {e}", flush=True)
+    html = calendar_root.evaluate("el => el.outerHTML")
+    safe_write_text(out_path, html)
 
 def take_calendar_screenshot(calendar_root, out_path: Path) -> None:
-    calendar_root.scroll_into_view_if_needed()
-    calendar_root.screenshot(path=str(out_path))
+    safe_element_screenshot(calendar_root, out_path)
 
-def save_calendar_assets(cal_root, outdir: Path, save_timestamped: bool) -> None:
+def save_calendar_assets(cal_root, outdir: Path, save_timestamped: bool) -> Tuple[Path, Path, Optional[Path], Optional[Path]]:
     """
     最新（calendar.html / calendar.png）は常に上書き。
     変化時のみタイムスタンプ付き履歴を追加。
+    戻り値: (latest_html, latest_png, ts_html or None, ts_png or None)
     """
     latest_html = outdir / "calendar.html"
     latest_png = outdir / "calendar.png"
 
-    ts = _dt.now().strftime("%Y%m%d_%H%M")
+    ts = _dt.now().strftime("%Y%m%d_%H%M%S")  # 秒まで
     html_ts = outdir / f"calendar_{ts}.html"
-    png_ts = outdir / f"calendar_{ts}.png"
+    png_ts  = outdir / f"calendar_{ts}.png"
 
     dump_calendar_html(cal_root, latest_html)
     take_calendar_screenshot(cal_root, latest_png)
 
+    ts_html_out = None
+    ts_png_out = None
     if save_timestamped:
         dump_calendar_html(cal_root, html_ts)
         take_calendar_screenshot(cal_root, png_ts)
-        print(f"[INFO] saved (timestamped): {html_ts.name}, {png_ts.name}", flush=True)
-    else:
-        print(f"[INFO] saved (latest only): {latest_html.name}, {latest_png.name}", flush=True)
+        ts_html_out = html_ts
+        ts_png_out  = png_ts
+
+    # 存在確認
+    for p in [latest_html, latest_png] + ([html_ts, png_ts] if save_timestamped else []):
+        if not p.exists() or p.stat().st_size == 0:
+            raise RuntimeError(f"保存確認に失敗（存在/サイズゼロ）: {p}")
+
+    return latest_html, latest_png, ts_html_out, ts_png_out
 
 # ------------------------------
 # メイン処理
 # ------------------------------
 def run_monitor() -> None:
     print("[INFO] run_monitor: start", flush=True)
-    ensure_dirs()
+    print(f"[INFO] BASE_DIR={BASE_DIR}  cwd={Path.cwd()}  OUTPUT_ROOT={OUTPUT_ROOT}", flush=True)
+    ensure_root_dir(OUTPUT_ROOT)
+
     try:
         config = load_config()
     except Exception as e:
@@ -627,7 +634,7 @@ def run_monitor() -> None:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context()
 
-        # パフォーマンス改善：不要リソースのロード抑制
+        # パフォーマンス改善：不要リソースのロード抑制（PNGは許可）
         def _block_route(route):
             url = route.request.url.lower()
             blocked_ext = [".jpg", ".jpeg", ".gif", ".webp", ".woff", ".woff2", ".ttf", ".otf", ".svg", ".mp4", ".webm"]
@@ -649,32 +656,33 @@ def run_monitor() -> None:
                 cal_root = locate_calendar_root(page, month_text or "予約カレンダー", facility)
                 fshort = FACILITY_TITLE_ALIAS.get(facility.get('name',''), facility.get('name',''))
                 outdir = facility_month_dir(fshort or 'unknown_facility', month_text)
+                print(f"[INFO] outdir={outdir}", flush=True)
 
                 # 当月の集計＆保存
-                try:
-                    summary, details = summarize_vacancies(page, cal_root, config)
-                    prev_summary = load_last_summary(outdir)
-                    changed = summaries_changed(prev_summary, summary)
+                summary, details = summarize_vacancies(page, cal_root, config)
+                prev_summary = load_last_summary(outdir)
+                changed = summaries_changed(prev_summary, summary)
 
-                    save_calendar_assets(cal_root, outdir, save_timestamped=changed)
+                latest_html, latest_png, ts_html, ts_png = save_calendar_assets(cal_root, outdir, save_timestamped=changed)
 
-                    (outdir / "status_counts.json").write_text(
-                        json.dumps(
-                            {"month": month_text, "facility": facility.get('name',''),
-                             "summary": summary, "details": details},
-                            ensure_ascii=False, indent=2
-                        ),
-                        "utf-8"
-                    )
-                    print(
-                        f"[INFO] summary({facility.get('name','')} - {month_text}): "
-                        f"○={summary['○']} △={summary['△']} ×={summary['×']} 未判定={summary['未判定']}",
-                        flush=True
-                    )
-                except Exception as e:
-                    print(f"[WARN] summarize (current) failed: {e}", flush=True)
+                # 毎回差分が出るよう run_at を付与
+                payload = {
+                    "month": month_text,
+                    "facility": facility.get('name',''),
+                    "summary": summary,
+                    "details": details,
+                    "run_at": jst_now().strftime("%Y-%m-%d %H:%M:%S JST")
+                }
+                safe_write_text(outdir / "status_counts.json", json.dumps(payload, ensure_ascii=False, indent=2))
 
-                print(f"[INFO] saved: {facility.get('name','')} - {month_text}", flush=True)
+                print(
+                    f"[INFO] summary({facility.get('name','')} - {month_text}): "
+                    f"○={summary['○']} △={summary['△']} ×={summary['×']} 未判定={summary['未判定']}",
+                    flush=True
+                )
+                if ts_html and ts_png:
+                    print(f"[INFO] saved (timestamped): {ts_html.name}, {ts_png.name}", flush=True)
+                print(f"[INFO] saved: {facility.get('name','')} - {month_text}  latest=({latest_html.name},{latest_png.name})", flush=True)
 
                 # 以降、「次の月」を連続クリック → キャプチャ＆集計
                 shifts = facility.get("month_shifts", [0, 1])
@@ -695,53 +703,59 @@ def run_monitor() -> None:
                         facility=facility
                     )
                     if not ok:
-                        failed = SNAP_DIR / f"failed_next_month_step{step}_{fshort}.png"
-                        try:
-                            page.screenshot(path=str(failed))
-                        except Exception:
-                            pass
-                        print(f"[WARN] next-month click failed at step={step} (full-page captured)", flush=True)
+                        failed_dir = OUTPUT_ROOT / "_debug"
+                        safe_mkdir(failed_dir)
+                        failed = failed_dir / f"failed_next_month_step{step}_{fshort}.png"
+                        page.screenshot(path=str(failed))
+                        print(f"[WARN] next-month click failed at step={step} (full-page captured: {failed})", flush=True)
                         break
 
                     month_text2 = get_current_year_month_text(page, calendar_root=None) or f"shift_{step}"
                     print(f"[INFO] month(step={step}): {month_text2}", flush=True)
 
                     cal_root2 = locate_calendar_root(page, month_text2 or "予約カレンダー", facility)
+                    outdir2 = facility_month_dir(fshort or 'unknown_facility', month_text2)
+                    print(f"[INFO] outdir(step={step})={outdir2}", flush=True)
 
                     if step in shifts:
-                        outdir2 = facility_month_dir(fshort or 'unknown_facility', month_text2)
+                        summary2, details2 = summarize_vacancies(page, cal_root2, config)
+                        prev_summary2 = load_last_summary(outdir2)
+                        changed2 = summaries_changed(prev_summary2, summary2)
 
-                        try:
-                            summary2, details2 = summarize_vacancies(page, cal_root2, config)
-                            prev_summary2 = load_last_summary(outdir2)
-                            changed2 = summaries_changed(prev_summary2, summary2)
+                        latest_html2, latest_png2, ts_html2, ts_png2 = save_calendar_assets(cal_root2, outdir2, save_timestamped=changed2)
 
-                            save_calendar_assets(cal_root2, outdir2, save_timestamped=changed2)
+                        payload2 = {
+                            "month": month_text2,
+                            "facility": facility.get('name',''),
+                            "summary": summary2,
+                            "details": details2,
+                            "run_at": jst_now().strftime("%Y-%m-%d %H:%M:%S JST")
+                        }
+                        safe_write_text(outdir2 / "status_counts.json", json.dumps(payload2, ensure_ascii=False, indent=2))
 
-                            (outdir2 / "status_counts.json").write_text(
-                                json.dumps(
-                                    {"month": month_text2, "facility": facility.get('name',''),
-                                     "summary": summary2, "details": details2},
-                                    ensure_ascii=False, indent=2
-                                ),
-                                "utf-8"
-                            )
-
-                            print(
-                                f"[INFO] summary({facility.get('name','')} - {month_text2}): "
-                                f"○={summary2['○']} △={summary2['△']} ×={summary2['×']} 未判定={summary2['未判定']}",
-                                flush=True
-                            )
-
-                        except Exception as e:
-                            print(f"[WARN] summarize (step={step}) failed: {e}", flush=True)
+                        print(
+                            f"[INFO] summary({facility.get('name','')} - {month_text2}): "
+                            f"○={summary2['○']} △={summary2['△']} ×={summary2['×']} 未判定={summary2['未判定']}",
+                            flush=True
+                        )
+                        if ts_html2 and ts_png2:
+                            print(f"[INFO] saved (timestamped): {ts_html2.name}, {ts_png2.name}", flush=True)
+                        print(f"[INFO] saved: {facility.get('name','')} - {month_text2}  latest=({latest_html2.name},{latest_png2.name})", flush=True)
 
                     # 次ループ基準更新
                     cal_root = cal_root2
                     prev_month_text = month_text2
 
             except Exception as e:
-                print(f"[WARN] run_monitor: facility処理中に例外: {e}", flush=True)
+                # 施設ごとに失敗した場合、デバッグ用にフルページを保存して継続
+                dbg_dir = OUTPUT_ROOT / "_debug"
+                safe_mkdir(dbg_dir)
+                shot = dbg_dir / f"exception_{FACILITY_TITLE_ALIAS.get(facility.get('name',''), facility.get('name',''))}_{_dt.now().strftime('%Y%m%d_%H%M%S')}.png"
+                try:
+                    page.screenshot(path=str(shot))
+                except Exception:
+                    pass
+                print(f"[ERROR] run_monitor: 施設処理中に例外: {e}  (debug: {shot})", flush=True)
                 continue
 
         browser.close()
@@ -788,5 +802,6 @@ def main() -> None:
 # ------------------------------
 if __name__ == "__main__":
     print("[INFO] Starting monitor.py ...", flush=True)
+    print(f"[INFO] BASE_DIR={BASE_DIR}  cwd={Path.cwd()}  OUTPUT_ROOT={OUTPUT_ROOT}", flush=True)
     main()
     print("[INFO] monitor.py finished.", flush=True)
