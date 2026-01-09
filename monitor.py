@@ -3,16 +3,18 @@
 """
 さいたま市 施設予約システムの空き状況監視
 
-主な機能/変更点:
+最優先の高速化のみ適用：
+- 初回ページ読み込みの待機を軽量化（DOMContentLoaded のみ）
+- 画像ブロックの最適化（PNGは原則ブロック。カレンダー関連だけ許可）
+
+既存機能は維持：
 - 監視時間帯の制御（--force / MONITOR_FORCE）
 - 施設ページ遷移（click_sequence）
 - カレンダー枠の厳密特定（calendar_selector 優先、曜日＋セル数チェック）
 - セル抽出は枠内限定、日付が無いセルはスキップ
 - 「次の月」遷移の厳密化（'次の月' 厳密一致 → moveCalender(..., YYYYMMDD) の日付一致）
-- 保存処理の厳格化（書込みテスト/存在確認/失敗は例外で停止）
-- タイムスタンプ秒単位で履歴ファイル名生成（同一分上書き回避）
-- 不要リソースのロード抑制で高速化
-- 詳細ログ（BASE_DIR / cwd / outdir / 絶対パス）出力
+- summary 変化時のみタイムスタンプ付き履歴保存（最新は常に更新）
+- 詳細ログ（BASE_DIR / cwd / OUTPUT_ROOT / outdir）出力
 
 環境変数（GitHub Secrets想定）:
 - BASE_URL                例: "https://saitama.rsv.ws-scs.jp/web/"
@@ -87,16 +89,12 @@ def load_config() -> Dict[str, Any]:
     return cfg
 
 def ensure_root_dir(root: Path) -> None:
-    """
-    出力ルート（OUTPUT_ROOT）を必ず作成し、書込みテストを行う。
-    失敗時は例外。
-    """
+    """出力ルート（OUTPUT_ROOT）を作成し、書込みテスト"""
     root.mkdir(parents=True, exist_ok=True)
     test_file = root / ".write_test"
     test_file.write_text(f"ok {jst_now().isoformat()} \n", encoding="utf-8")
     if not test_file.exists():
         raise RuntimeError(f"OUTPUT_ROOT 書込みテストに失敗: {test_file}")
-    # 後始末（不要なら削除）
     try:
         test_file.unlink()
     except Exception:
@@ -126,9 +124,7 @@ def safe_element_screenshot(el, out_path: Path) -> None:
 # Playwright 操作（遷移）
 # ------------------------------
 def try_click_text(page, label: str, timeout_ms: int = 15000, quiet: bool = True) -> bool:
-    """
-    指定ラベルのリンク/ボタン/テキストをクリック（厳密一致優先）
-    """
+    """指定ラベルのリンク/ボタン/テキストをクリック（厳密一致優先）"""
     locators = [
         page.get_by_role("link", name=label, exact=True),
         page.get_by_role("button", name=label, exact=True),
@@ -150,11 +146,13 @@ def try_click_text(page, label: str, timeout_ms: int = 15000, quiet: bool = True
 def navigate_to_facility(page, facility: Dict[str, Any]) -> None:
     """
     トップ → click_sequence の順で施設の当月ページまで到達
+    【最優先高速化】初回 goto は DOMContentLoaded のみ待機
     """
     if not BASE_URL:
         raise RuntimeError("BASE_URL が未設定です。Secrets の BASE_URL に https://saitama.rsv.ws-scs.jp/web/ を入れてください。")
 
-    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=60000)
+    # ★ 最優先高速化：軽量待機（networkidle を完全廃止）
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
     page.wait_for_load_state("domcontentloaded", timeout=30000)
 
     for opt in ["同意する", "OK", "確認", "閉じる"]:
@@ -166,10 +164,7 @@ def navigate_to_facility(page, facility: Dict[str, Any]) -> None:
             raise RuntimeError(f"クリック対象が見つかりません：『{label}』（施設: {facility.get('name','')}）")
 
 def get_current_year_month_text(page, calendar_root=None) -> Optional[str]:
-    """
-    ページ（もしくはカレンダー枠）から 'YYYY年M月' を抽出。
-    見つからない場合は None。
-    """
+    """ページ（もしくはカレンダー枠）から 'YYYY年M月' を抽出。見つからない場合は None。"""
     pattern = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月")
     targets = []
     if calendar_root is not None:
@@ -242,6 +237,13 @@ def locate_calendar_root(page, hint: str, facility: Dict[str, Any] = None):
     candidates.sort(key=lambda x: x[0], reverse=True)
     return candidates[0][1]
 
+def dump_calendar_html(calendar_root, out_path: Path) -> None:
+    html = calendar_root.evaluate("el => el.outerHTML")
+    safe_write_text(out_path, html)
+
+def take_calendar_screenshot(calendar_root, out_path: Path) -> None:
+    safe_element_screenshot(calendar_root, out_path)
+
 # ------------------------------
 # 月遷移（“次の月”の絶対日付だけをクリック）
 # ------------------------------
@@ -254,8 +256,7 @@ def _compute_next_month_text(prev_month_text: str) -> str:
         y = int(m.group(1))
         mo = int(m.group(2))
         if mo == 12:
-            y += 1
-            mo = 1
+            y += 1; mo = 1
         else:
             mo += 1
         return f"{y}年{mo}月"
@@ -573,13 +574,6 @@ def summaries_changed(prev: Optional[Dict[str, int]], cur: Dict[str, int]) -> bo
             return True
     return False
 
-def dump_calendar_html(calendar_root, out_path: Path) -> None:
-    html = calendar_root.evaluate("el => el.outerHTML")
-    safe_write_text(out_path, html)
-
-def take_calendar_screenshot(calendar_root, out_path: Path) -> None:
-    safe_element_screenshot(calendar_root, out_path)
-
 def save_calendar_assets(cal_root, outdir: Path, save_timestamped: bool) -> Tuple[Path, Path, Optional[Path], Optional[Path]]:
     """
     最新（calendar.html / calendar.png）は常に上書き。
@@ -634,13 +628,39 @@ def run_monitor() -> None:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context()
 
-        # パフォーマンス改善：不要リソースのロード抑制（PNGは許可）
+        # ★ 最優先高速化：ルーティング最適化
+        # PNG は原則ブロック。ただし「予約カレンダー関連」の PNG は許可する。
+        # 具体的には、月検索/施設空き状況ページ（InstSrchMonthVacant）に関係するURLや、
+        # カレンダーDOM直下の取得に紐づくURL文字列を暫定的に許可する。
+        CALENDAR_HINTS = [
+            "InstSrchMonthVacant",  # 施設月検索（HTMLから確認されたアクション名に準拠）
+            "MonthVacant",          # 似た命名へのフォールバック
+            "calendar",             # カレンダーDOM配下の静的ファイル名にありがちな文字列
+            "/web/",                # サイト配下のルート（必要に応じてチューニング）
+        ]
+        BLOCKED_EXT = [".jpg", ".jpeg", ".gif", ".webp", ".woff", ".woff2", ".ttf", ".otf", ".svg", ".mp4", ".webm"]
+
+        def _is_calendar_related(url: str) -> bool:
+            u = url.lower()
+            return any(h.lower() in u for h in CALENDAR_HINTS)
+
         def _block_route(route):
-            url = route.request.url.lower()
-            blocked_ext = [".jpg", ".jpeg", ".gif", ".webp", ".woff", ".woff2", ".ttf", ".otf", ".svg", ".mp4", ".webm"]
-            if any(url.endswith(ext) for ext in blocked_ext):
+            url = route.request.url
+            ul = url.lower()
+
+            # 拡張子ベースの重いリソースは遮断
+            if any(ul.endswith(ext) for ext in BLOCKED_EXT):
                 return route.abort()
+
+            # PNG は原則遮断。カレンダー関連のみ許可
+            if ul.endswith(".png"):
+                if _is_calendar_related(url):
+                    return route.continue_()
+                else:
+                    return route.abort()
+
             return route.continue_()
+
         context.route("**/*", _block_route)
 
         page = context.new_page()
@@ -665,7 +685,6 @@ def run_monitor() -> None:
 
                 latest_html, latest_png, ts_html, ts_png = save_calendar_assets(cal_root, outdir, save_timestamped=changed)
 
-                # 毎回差分が出るよう run_at を付与
                 payload = {
                     "month": month_text,
                     "facility": facility.get('name',''),
