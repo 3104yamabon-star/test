@@ -128,6 +128,7 @@ jobs:
           OUTPUT_DIR: ${{ env.OUTPUT_DIR }}
           BASE_URL: ${{ secrets.BASE_URL }}
           DISCORD_WEBHOOK_URL: ${{ env.DISCORD_WEBHOOK_URL }}
+          DISCORD_MENTION_USER_ID: ${{ secrets.DISCORD_MENTION_USER_ID }}
           MONITOR_FORCE: "0"         # ★ 時間帯外では実行しない
           MONITOR_START_HOUR: "5"    # ★ 05:00 開始
           MONITOR_END_HOUR:   "23"   # ★ 23:55 終了（分は次行）
