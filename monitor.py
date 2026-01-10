@@ -779,6 +779,7 @@ def _build_mention_and_allowed() -> Tuple[str, Dict[str, Any]]:
       3) DISCORD_USE_HERE=1 なら @here
       4) それ以外はメンションなし（allowed_mentions は parse=[]）
     """
+    return "", {"allowed_mentions": {"parse": []}}  # ★ メンション完全OFF
     mention = ""
     allowed: Dict[str, Any] = {}
 
