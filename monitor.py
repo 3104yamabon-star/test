@@ -860,26 +860,32 @@ class DiscordWebhookClient:
                 return -1, f"Exception: {e}", {}
 
     # ---- ここからメンション対応 ----
+    
     def send_embed(self, title: str, description: str, color: int = 0x00B894, footer_text: str = "Facility monitor") -> bool:
-        mention, allowed = _build_mention_and_allowed()
-        embed = {
-            "title": title,
-            "description": _truncate_embed_description(description or ""),
-            "color": color,
-            "timestamp": jst_now().isoformat(),
-            "footer": {"text": footer_text},
-        }
-        # content にメンションを明示（未読バッジを確実に付ける）
-        payload = {"content": mention if mention else "", "embeds": [embed], **allowed}
-        print("[DEBUG] payload preview:", json.dumps(payload, ensure_ascii=False), flush=True)
-      
-        status, body, headers = self._post(payload)
-        if status in (200, 204):
-            print(f"[INFO] Discord notified (embed): title='{title}' len={len(description or '')} body={body}", flush=True)
-            return True
-        print(f"[WARN] Embed failed: HTTP {status}; body={body}. Falling back to plain text.", flush=True)
-        text = f"**{title}**\n{description or ''}"
-        return self.send_text(text)
+    mention, allowed = _build_mention_and_allowed()
+    one_line = (description or "").splitlines()[0] if description else ""
+
+    # 通知プレビューで読めるよう、本文にサマリを入れる（施設名の太字タイトル）
+    content = f"{mention} **{title}** — {one_line}".strip() if (mention or one_line or title) else ""
+
+    embed = {
+        "title": title,
+        "description": _truncate_embed_description(description or ""),
+        "color": color,
+        "timestamp": jst_now().isoformat(),
+        "footer": {"text": footer_text},
+    }
+
+    payload = {"content": content, "embeds": [embed], **allowed}
+    print("[DEBUG] payload preview:", json.dumps(payload, ensure_ascii=False), flush=True)
+    status, body, headers = self._post(payload)
+    if status in (200, 204):
+        print(f"[INFO] Discord notified (embed): title='{title}' len={len(description or '')} body={body}", flush=True)
+        return True
+    print(f"[WARN] Embed failed: HTTP {status}; body={body}. Falling back to plain text.", flush=True)
+    text = f"**{title}**\n{description or ''}"
+    return self.send_text(text)
+
 
     def send_text(self, content: str) -> bool:
         mention, allowed = _build_mention_and_allowed()
