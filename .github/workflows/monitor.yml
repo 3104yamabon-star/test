@@ -5,11 +5,12 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # コミット/プッシュに必要
+  contents: write # コミット/プッシュに必要
 
 jobs:
   monitor:
     runs-on: ubuntu-latest
+
     concurrency:
       group: facility-monitor
       cancel-in-progress: false
@@ -18,8 +19,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
       OUTPUT_DIR: snapshots
       PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      # 保険用の上限（軽量待機の上限ミリ秒）
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }} # ← Secrets から受け取る場合はここでも可
       GRACE_MS: "600"
 
     steps:
@@ -51,32 +51,45 @@ jobs:
               import playwright  # noqa
               print("[INFO] playwright package is present.")
           except Exception:
-              print("[INFO] playwright not found; installing pinned version...")
+              print("[INFO] playwright not found; installing pinned version (1.46.0)...")
               subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright==1.46.0"])
           PY
 
+      # ★★ 提案Aの堅牢版（フルフォールバック & 厳密なシェルオプション）★★
       - name: Compute Playwright cache key
         id: pw
         shell: bash
         run: |
-          set -e
-          PW_VER=$(python - <<'PY'
-          import importlib.metadata as m
+          set -euo pipefail
+
+          get_ver_py=$(python - <<'PY'
+          # 1) importlib.metadata → 2) pkg_resources → 3) 空文字
+          ver = ""
           try:
-              print(m.version("playwright"))
+              import importlib.metadata as m
+              ver = m.version("playwright")
           except Exception:
-              print("")
+              try:
+                  import pkg_resources
+                  ver = pkg_resources.get_distribution("playwright").version
+              except Exception:
+                  ver = ""
+          print(ver)
           PY
           )
-          if [ -z "${PW_VER}" ]; then
-            PW_VER=$(python -m pip show playwright | awk '/Version:/ {print $2}')
+
+          # 2nd: pip show にフォールバック（標準エラー抑制）
+          if [ -z "${get_ver_py}" ]; then
+            get_ver_py=$(python -m pip show playwright 2>/dev/null | awk '/Version:/ {print $2}')
           fi
-          if [ -z "${PW_VER}" ]; then
+
+          if [ -z "${get_ver_py}" ]; then
             echo "[ERROR] Failed to determine Playwright version."
             exit 1
           fi
-          echo "Playwright version: ${PW_VER}"
-          echo "version=${PW_VER}" >> "$GITHUB_OUTPUT"
+
+          echo "Playwright version: ${get_ver_py}"
+          echo "version=${get_ver_py}" >> "$GITHUB_OUTPUT"
 
       - name: Cache Playwright browsers (Chromium)
         uses: actions/cache@v4
@@ -85,7 +98,7 @@ jobs:
           key: ${{ runner.os }}-msplaywright-${{ steps.pw.outputs.version }}
           restore-keys: |
             ${{ runner.os }}-msplaywright-
-        # save-always: true   # GitHub Actions v4ではデフォルト挙動でOK
+        # save-always: true # GitHub Actions v4ではデフォルト挙動でOK
 
       - name: Check cached browsers
         id: have_browsers
@@ -128,21 +141,22 @@ jobs:
           OUTPUT_DIR: ${{ env.OUTPUT_DIR }}
           BASE_URL: ${{ secrets.BASE_URL }}
           DISCORD_WEBHOOK_URL: ${{ env.DISCORD_WEBHOOK_URL }}
-          DISCORD_MENTION_USER_ID: ${{ secrets.DISCORD_MENTION_USER_ID }}
-          MONITOR_FORCE: "0"         # ★ 時間帯外では実行しない
-          MONITOR_START_HOUR: "5"    # ★ 05:00 開始
-          MONITOR_END_HOUR:   "23"   # ★ 23:55 終了（分は次行）
-          MONITOR_END_MINUTE: "55"   # ★ 終了分を指定
+          DISCORD_MENTION_USER_ID: ${{ secrets.DISCORD_MENTION_USER_ID }}   # ★ Secrets を渡す（必須）
+          MONITOR_FORCE: "0"  # ★ 時間帯外では実行しない
+          MONITOR_START_HOUR: "5"   # ★ 05:00 開始
+          MONITOR_END_HOUR: "23"    # ★ 23:55 終了（分は次行）
+          MONITOR_END_MINUTE: "55"  # ★ 終了分指定
           GRACE_MS: ${{ env.GRACE_MS }}
         run: |
           echo "[INFO] Starting monitor.py ..."
-          python -u monitor.py       # ★ --force は付けない
+          python -u monitor.py  # ★ --force は付けない
           echo "[INFO] monitor.py finished."
 
       - name: Show snapshot files (detailed)
         run: |
           echo "----- snapshots tree -----"
           find "${{ env.OUTPUT_DIR }}" -type f -printf "%T@ %TY-%Tm-%Td %TH:%TM:%TS %p %s bytes\n" | sort -n || true
+
           echo "----- git status/diff -----"
           git status "${{ env.OUTPUT_DIR }}/" || true
           git diff --name-only "${{ env.OUTPUT_DIR }}/" || true
@@ -151,6 +165,7 @@ jobs:
         run: |
           echo "----- git check-ignore -----"
           git check-ignore -v "${{ env.OUTPUT_DIR }}" "${{ env.OUTPUT_DIR }}/**" || true
+
           git add -f "${{ env.OUTPUT_DIR }}/" || true
 
       - name: Commit & Push snapshot updates
