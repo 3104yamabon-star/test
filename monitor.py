@@ -870,7 +870,8 @@ class DiscordWebhookClient:
         }
         # content にメンションを明示（未読バッジを確実に付ける）
         payload = {"content": mention if mention else "", "embeds": [embed], **allowed}
-      print("[DEBUG] payload preview:", json.dumps(payload, ensure_ascii=False), flush=True)
+        print("[DEBUG] payload preview:", json.dumps(payload, ensure_ascii=False), flush=True)
+      
         status, body, headers = self._post(payload)
         if status in (200, 204):
             print(f"[INFO] Discord notified (embed): title='{title}' len={len(description or '')} body={body}", flush=True)
@@ -886,7 +887,8 @@ class DiscordWebhookClient:
         for i, page in enumerate(pages, 1):
             page_with_mention = f"{mention} {page}".strip() if mention else page
             payload = {"content": page_with_mention, **allowed}
-          print("[DEBUG] payload preview:", json.dumps(payload, ensure_ascii=False), flush=True)
+            print("[DEBUG] payload preview:", json.dumps(payload, ensure_ascii=False), flush=True)
+          
             status, body, headers = self._post(payload)
             if status in (200, 204):
                 print(f"[INFO] Discord notified (text p{i}/{len(pages)}): {len(page_with_mention)} chars body={body}", flush=True)
