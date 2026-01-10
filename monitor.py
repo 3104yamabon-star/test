@@ -782,7 +782,7 @@ def _build_mention_and_allowed() -> Tuple[str, Dict[str, Any]]:
     mention = ""
     allowed: Dict[str, Any] = {}
 
-    uid = os.getenv("1334152670822400054", "").strip()
+    uid = os.getenv("DISCORD_MENTION_USER_ID", "").strip()
     use_everyone = os.getenv("DISCORD_USE_EVERYONE", "0").strip() == "1"
     use_here = os.getenv("DISCORD_USE_HERE", "0").strip() == "1"
 
