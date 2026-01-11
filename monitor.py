@@ -292,6 +292,43 @@ def wait_calendar_ready(page, facility: Dict[str, Any]) -> None:
                     continue
         print("[WARN] calendar ready check timed out; proceeding optimistically.", flush=True)
 
+
+
+def is_calendar_visible(page, facility: Dict[str, Any]) -> bool:
+    """
+    館選択直後にすでに当月カレンダーが可視なら True を返す。
+    - 余計なクリックを避けるための軽量判定（最大 ~900ms 程度でレース）
+    """
+    try:
+        # すでに calendar_selector が指定されている場合は最優先
+        sel = facility.get("calendar_selector") or "table.reservation-calendar"
+        loc = page.locator(sel).first
+        # URL変化 or DOM出現のレース（wait_next_step_ready と同様の軽量）
+        deadline = time.perf_counter() + 0.9
+        while time.perf_counter() < deadline:
+            try:
+                if loc.count() > 0:
+                    if loc.is_visible():
+                        # セル数でもざっくり確認（当月は概ね >=28）
+                        cells = loc.locator(":scope tbody td, :scope [role='gridcell'], :scope .fc-daygrid-day, :scope .calendar-day")
+                        if cells.count() >= 28:
+                            return True
+                        # 可視だけどセル数がまだ → 少し待つ
+                    else:
+                        pass
+            except Exception:
+                pass
+            page.wait_for_timeout(120)
+        # 最後に 300ms の保険可視チェック
+        try:
+            loc.wait_for(state="visible", timeout=300)
+            return True
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
 # === カレンダー見出し（YYYY年M月）の取得 ===
 def get_current_year_month_text(page, calendar_root=None) -> Optional[str]:
     pat = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月")
