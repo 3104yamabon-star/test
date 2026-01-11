@@ -1,147 +1,43 @@
+
 {
-  "back_to_list_selectors": [
-    "a:has-text(\"もどる\")",
-    "a:has-text(\"戻る\")",
-    "a[href*=\"MonthVacantBackAction\"]",
-    "a[href*=\"InstSrchMonthVacantBackAction\"]"
-  ],
-  "facility_list_hint": "a[href*=\"gRsvWTransInstSrchInstAction\"], text=館一覧, text=館を選択, text=館を選択して下さい",
-  "status_patterns": {
-    "circle": [
-      "circle",
-      "全て空き",
-      "ok",
-      "vacant",
-      "maru",
-      "available",
-      "is-available",
-      "icon-ok"
-    ],
-    "triangle": [
-      "triangle",
-      "一部空き",
-      "partial",
-      "few",
-      "warning",
-      "limited",
-      "icon-partial"
-    ],
-    "cross": [
-      "cross",
-      "予約あり",
-      "full",
-      "unavailable",
-      "batsu",
-      "is-full",
-      "icon-ng"
-    ]
-  },
-  "css_class_patterns": {
-    "circle": [
-      "status-ok",
-      "ok",
-      "vacant",
-      "available",
-      "is-available",
-      "icon-ok"
-    ],
-    "triangle": [
-      "status-partial",
-      "partial",
-      "few",
-      "warning",
-      "limited",
-      "icon-partial"
-    ],
-    "cross": [
-      "status-ng",
-      "full",
-      "unavailable",
-      "batsu",
-      "is-full",
-      "icon-ng"
-    ]
-  },
   "facilities": [
     {
       "name": "南浦和コミュニティセンター",
-      "click_sequence": [
-        "施設の空き状況",
-        "利用目的から",
-        "屋内スポーツ",
-        "バドミントン",
-        "南浦和コミュニティセンター"
-      ],
-      "click_from_list": [
-        "南浦和コミュニティセンター"
-      ],
-      "month_shifts": [
-        0,
-        1,
-        2,
-        3
-      ],
+      "click_sequence": ["施設の空き状況", "利用目的から", "屋内スポーツ", "バドミントン", "南浦和コミュニティセンター"],
+      "month_shifts": [0, 1, 2, 3],
       "calendar_selector": "table.reservation-calendar"
     },
     {
       "name": "岩槻南部公民館",
-      "click_sequence": [
-        "施設の空き状況",
-        "利用目的から",
-        "屋内スポーツ",
-        "バドミントン",
-        "岩槻南部公民館"
-      ],
-      "click_from_list": [
-        "岩槻南部公民館"
-      ],
-      "month_shifts": [
-        0,
-        1,
-        2,
-        3
-      ],
+      "click_sequence": ["施設の空き状況", "利用目的から", "屋内スポーツ", "バドミントン", "岩槻南部公民館"],
+      "month_shifts": [0, 1, 2, 3],
       "calendar_selector": "table.reservation-calendar"
     },
     {
       "name": "岸町公民館",
-      "click_sequence": [
-        "施設の空き状況",
-        "利用目的から",
-        "屋内スポーツ",
-        "バドミントン",
-        "岸町公民館"
-      ],
-      "click_from_list": [
-        "岸町公民館"
-      ],
-      "month_shifts": [
-        0,
-        1
-      ],
+      "click_sequence": ["施設の空き状況", "利用目的から", "屋内スポーツ", "バドミントン", "岸町公民館"],
+      "month_shifts": [0, 1],
       "calendar_selector": "table.reservation-calendar"
     },
     {
       "name": "鈴谷公民館",
-      "click_sequence": [
-        "施設の空き状況",
-        "利用目的から",
-        "屋内スポーツ",
-        "バドミントン",
-        "鈴谷公民館",
-        "すべて"
-      ],
-      "click_from_list": [
-        "鈴谷公民館"
-      ],
-      "month_shifts": [
-        0,
-        1
-      ],
-      "calendar_selector": "table.reservation-calendar",
-      "next_month_label": "次の月"
+      "click_sequence": ["施設の空き状況", "利用目的から", "屋内スポーツ", "バドミントン", "鈴谷公民館", "すべて"],
+      "month_shifts": [0, 1],
+      "calendar_selector": "table.reservation-calendar"
     }
   ],
+  "next_month_label": "次の月",
+  "calendar_root_hint": "空き状況",
+  "status_patterns": {
+    "circle": ["全て空き"],
+    "triangle": ["一部空き"],
+    "cross": ["予約あり"]
+  },
+  "css_class_patterns": {
+    "circle": ["status-ok", "ok", "vacant", "maru", "available", "is-available", "icon-ok"],
+    "triangle": ["status-partial", "partial", "few", "warning", "limited", "icon-partial"],
+    "cross": ["status-ng", "full", "unavailable", "batsu", "is-full", "icon-ng"]
+  },
   "debug": {
     "dump_calendar_html": true,
     "log_top_samples": 15,
