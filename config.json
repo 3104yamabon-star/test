@@ -50,6 +50,7 @@
       "month_shifts": [0, 1],
       "calendar_selector": "table.reservation-calendar"
     },
+    
     {
       "name": "浦和駒場体育館",
       "click_sequence": [
@@ -62,25 +63,28 @@
       ],
       "month_shifts": [0, 1, 2, 3],
       "calendar_selector": "table.reservation-calendar",
+    
       "special_selectors": {
         "浦和駒場体育館第２体育室": [
-          ".room-list a:has-text('第2体育室')",
-          ".room-list a:has-text('第２体育室')",
-          "a[href*='第2体育室']",
-          "a[href*='第２体育室']",
-          "button:has-text('第2体育室')",
-          "button:has-text('第２体育室')"
+          "a[href^='javascript:sendInstNo'][href*=\"'2')\"]:has-text('第２体育室')",
+          "a[href^='javascript:sendInstNo'][href*=\"'2')\"]:has-text('第2体育室')"
         ]
       },
       "special_pre_actions": {
         "浦和駒場体育館第２体育室": [
-          "SCROLL:0,800",
-          "CLICK:button:has-text('体育室'), a:has-text('体育室')",
-          "CLICK:.accordion:has-text('第2'), .accordion:has-text('第２')",
-          "SCROLL:0,1400"
+          "SCROLL:0,600"
         ]
+      },
+    
+      "step_hints": {
+        "施設の空き状況": ".tcontent",
+        "利用目的から": ".tcontent",
+        "屋内スポーツ": ".tcontent",
+        "バドミントン": ".tcontent",
+        "浦和駒場体育館": ".tcontent"
       }
     }
+
   ],
   "next_month_label": "次の月",
   "calendar_root_hint": "空き状況",
