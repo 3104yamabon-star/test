@@ -1,10 +1,14 @@
+
 # -*- coding: utf-8 -*-
 """
-さいたま市 施設予約システムの空き状況監視（高速化＋安定化・再修正版）
-- 施設間の移動を「空き状況画面の［もどる］→施設選択画面→施設名クリック」に変更
+さいたま市 施設予約システムの空き状況監視（高速化＋安定化・総合対策版）
+- 施設間の移動を「空き状況画面の［もどる］→施設選択画面→施設名クリック」に統一
 - 初回のみ従来のトップ→click_sequence で到達、それ以降は一覧から最短遷移
-- 戻る到達判定を OR ヒント＋最大 2.5s レース待機に拡張
-- 戻る候補セレクタを増強（表記ゆれ・余白対策）、失敗時はデバッグ出力
+- 対策A: 履歴戻り(go_back)既定無効。必要時のみ USE_GO_BACK=1 で有効化
+- 対策B: 戻るクリック強化 (scrollTop + force=True + 部分一致 + href一致)
+- 対策C: 一覧到達判定を OR ヒント＋最大2.5sレース待機に拡張
+- 対策D: 失敗時に _debug/back_failed.html & back_failed.png を保存
+- f文字列の \uXXXX を排し、○/△/× は実文字使用
 """
 import os
 import sys
@@ -34,6 +38,7 @@ MONITOR_START_HOUR = int(os.getenv("MONITOR_START_HOUR", "5"))
 MONITOR_END_HOUR = int(os.getenv("MONITOR_END_HOUR", "23"))
 TIMING_VERBOSE = os.getenv("TIMING_VERBOSE", "0").strip() == "1"
 FAST_ROUTES = os.getenv("FAST_ROUTES", "0").strip() == "1"  # フォント/解析ブロックON/OFF
+USE_GO_BACK = os.getenv("USE_GO_BACK", "0").strip() == "1"   # 既定オフ
 GRACE_MS_DEFAULT = 1000
 try:
     GRACE_MS = max(0, int(os.getenv("GRACE_MS", str(GRACE_MS_DEFAULT))))
@@ -148,15 +153,10 @@ def try_click_text(page, label: str, timeout_ms: int = 5000, quiet=True) -> bool
     ]
     for locator in locators:
         try:
-            if TIMING_VERBOSE:
-                with time_section(f"click '{label}' (wait+click)"):
-                    locator.wait_for(timeout=timeout_ms)
-                    locator.scroll_into_view_if_needed()
-                    locator.click(timeout=timeout_ms)
-            else:
-                locator.wait_for(timeout=timeout_ms)
-                locator.scroll_into_view_if_needed()
-                locator.click(timeout=timeout_ms)
+            locator.wait_for(timeout=timeout_ms)
+            locator.scroll_into_view_if_needed()
+            # occlusion対策に force=True を許容
+            locator.click(timeout=timeout_ms, force=True)
             return True
         except Exception as e:
             if not quiet:
@@ -182,7 +182,7 @@ def click_optional_dialogs_fast(page) -> None:
                     if c > 0:
                         try:
                             probe.first.scroll_into_view_if_needed()
-                            probe.first.click(timeout=500)
+                            probe.first.click(timeout=500, force=True)
                             clicked = True
                             break
                         except Exception:
@@ -194,7 +194,7 @@ def click_optional_dialogs_fast(page) -> None:
                     cand = page.locator(f"a:has-text('{label}')").first
                     if cand.count() > 0:
                         cand.scroll_into_view_if_needed()
-                        cand.click(timeout=300)
+                        cand.click(timeout=300, force=True)
                         clicked = True
                 except Exception:
                     pass
@@ -278,7 +278,16 @@ def wait_calendar_ready(page, facility: Dict[str, Any]) -> None:
 
 # === 一覧へ戻す（新規・拡張版） ===
 def back_to_facility_list(page, selectors: List[str], list_hint: Optional[str]) -> bool:
-    """空き状況画面の［もどる］で施設選択画面へ戻す。成功なら True。OR ヒント＋最大2.5s待機。"""
+    """空き状況画面の［もどる］で施設選択画面へ戻す。成功なら True。OR ヒント＋最大2.5s待機。
+    - 事前にスクロールトップへ移動
+    - occlusion対策に force=True でクリック
+    - go_back() は既定で無効（環境 USE_GO_BACK=1 で有効）
+    """
+    try:
+        page.evaluate("window.scrollTo(0,0)")
+    except Exception:
+        pass
+
     def _clicked_and_arrived() -> bool:
         deadline = time.perf_counter() + 2.5
         last_url = page.url
@@ -298,12 +307,12 @@ def back_to_facility_list(page, selectors: List[str], list_hint: Optional[str]) 
             page.wait_for_timeout(150)
         return False
 
-    # 1) 候補セレクタを順に試す
+    # 1) 候補セレクタを順に試す（構造が固い順）
     for sel in selectors or []:
         try:
             el = page.locator(sel).first
             if el and el.count() > 0:
-                el.scroll_into_view_if_needed(); el.click(timeout=2000)
+                el.scroll_into_view_if_needed(); el.click(timeout=2000, force=True)
                 if _clicked_and_arrived():
                     return True
         except Exception as e:
@@ -311,31 +320,25 @@ def back_to_facility_list(page, selectors: List[str], list_hint: Optional[str]) 
             continue
 
     # 1') 緩めのテキスト探索（保険：exact=False）
-    try:
-        t_el = page.get_by_text("もどる", exact=False).first
-        if t_el and t_el.count() > 0:
-            t_el.scroll_into_view_if_needed(); t_el.click(timeout=2000)
-            if _clicked_and_arrived():
-                return True
-    except Exception:
-        pass
-    try:
-        t_el2 = page.get_by_text("戻る", exact=False).first
-        if t_el2 and t_el2.count() > 0:
-            t_el2.scroll_into_view_if_needed(); t_el2.click(timeout=2000)
-            if _clicked_and_arrived():
-                return True
-    except Exception:
-        pass
+    for label in ("もどる", "戻る"):
+        try:
+            t_el = page.get_by_text(label, exact=False).first
+            if t_el and t_el.count() > 0:
+                t_el.scroll_into_view_if_needed(); t_el.click(timeout=2000, force=True)
+                if _clicked_and_arrived():
+                    return True
+        except Exception:
+            pass
 
-    # 2) ブラウザ履歴で後退（1回のみ）
-    try:
-        with time_section("go_back()"):
-            page.go_back(wait_until="domcontentloaded", timeout=5000)
-        if _clicked_and_arrived():
-            return True
-    except Exception as e:
-        print(f"[WARN] go_back failed: {e}", flush=True)
+    # 2) ブラウザ履歴で後退（既定オフ）
+    if USE_GO_BACK:
+        try:
+            with time_section("go_back()"):
+                page.go_back(wait_until="domcontentloaded", timeout=5000)
+            if _clicked_and_arrived():
+                return True
+        except Exception as e:
+            print(f"[WARN] go_back failed: {e}", flush=True)
 
     # 3) 到達できなければ失敗扱い（デバッグ出力）
     dbg = OUTPUT_ROOT / "_debug"; safe_mkdir(dbg)
@@ -359,7 +362,7 @@ def click_facility_from_list(page, labels: List[str]) -> None:
                 try:
                     el = page.locator(f"a[href*='gRsvWTransInstSrchInstAction']:has-text('{label}')").first
                     if el.count() > 0:
-                        el.scroll_into_view_if_needed(); el.click(timeout=2000)
+                        el.scroll_into_view_if_needed(); el.click(timeout=2000, force=True)
                         ok = True
                 except Exception:
                     pass
@@ -614,12 +617,12 @@ IMPROVE_TRANSITIONS = {
 }
 
 def _parse_month_text(month_text: str) -> Optional[Tuple[int, int]]:
-    m = re.match(r"(\d{4})年(\d{1,2})月", month_text or "")
+    m = re.match(r"(\\d{4})年(\\d{1,2})月", month_text or "")
     if not m: return None
     return int(m.group(1)), int(m.group(2))
 
 def _day_str_to_int(day_str: str) -> Optional[int]:
-    m = re.search(r"([1-9]\d?|1\d|2\d|3[01])\s*日", day_str or "")
+    m = re.search(r"([1-9]\\d?|1\\d|2\\d|3[01])\\s*日", day_str or "")
     return int(m.group(1)) if m else None
 
 def _weekday_jp(dt: datetime.date) -> str:
@@ -813,11 +816,12 @@ class DiscordWebhookClient:
                 print(f"[ERROR] Discord text failed (p{i}/{len(pages)}): HTTP {status} body={body}", flush=True)
         return ok_all
 
+# 施設ごとの色分け
 _FACILITY_ALIAS_COLOR_HEX = {
-    "南浦和": "0x3498DB",
-    "岩槻": "0x2ECC71",
-    "鈴谷": "0xF1C40F",
-    "岸町": "0xE74C3C",
+    "南浦和": "0x3498DB",  # Blue
+    "岩槻": "0x2ECC71",    # Green
+    "鈴谷": "0xF1C40F",    # Yellow
+    "岸町": "0xE74C3C",    # Red
 }
 _DEFAULT_COLOR_HEX = "0x00B894"
 
@@ -969,10 +973,10 @@ def run_monitor():
                 continue
         browser.close()
 
-# ====== 月送り（既存） ======
+# ====== 月送り（既存＋forceクリック） ======
 def _compute_next_month_text(prev: str) -> str:
     try:
-        m = re.match(r"(\d{4})年(\d{1,2})月", prev or "")
+        m = re.match(r"(\\d{4})年(\\d{1,2})月", prev or "")
         if not m: return ""
         y, mo = int(m.group(1)), int(m.group(2))
         if mo == 12: y += 1; mo = 1
@@ -982,7 +986,7 @@ def _compute_next_month_text(prev: str) -> str:
         return ""
 
 def _next_yyyymm01(prev: str) -> Optional[str]:
-    m = re.match(r"(\d{4})年(\d{1,2})月", prev or "")
+    m = re.match(r"(\\d{4})年(\\d{1,2})月", prev or "")
     if not m: return None
     y, mo = int(m.group(1)), int(m.group(2))
     if mo == 12: y += 1; mo = 1
@@ -991,7 +995,7 @@ def _next_yyyymm01(prev: str) -> Optional[str]:
 
 def _ym(text: Optional[str]) -> Optional[Tuple[int,int]]:
     if not text: return None
-    m = re.match(r"(\d{4})年(\d{1,2})月", text)
+    m = re.match(r"(\\d{4})年(\\d{1,2})月", text)
     return (int(m.group(1)), int(m.group(2))) if m else None
 
 def _is_forward(prev: str, cur: str) -> bool:
@@ -1001,7 +1005,7 @@ def _is_forward(prev: str, cur: str) -> bool:
     return (pm == 12 and cy == py + 1 and cm == 1) or (cy == py and cm == pm + 1)
 
 def get_current_year_month_text(page, calendar_root=None) -> Optional[str]:
-    pat = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月")
+    pat = re.compile(r"(\\d{4})\\s*年\\s*(\\d{1,2})\\s*月")
     targets: List[str] = []
     if calendar_root is None:
         locs = [
@@ -1070,11 +1074,7 @@ def locate_calendar_root(page, hint: str, facility: Dict[str, Any] = None):
 
 def click_next_month(page, label_primary="次の月", calendar_root=None, prev_month_text=None, wait_timeout_ms=20000, facility=None) -> bool:
     def _safe_click(el, note=""):
-        if TIMING_VERBOSE:
-            with time_section(f"next-month click {note}"):
-                el.scroll_into_view_if_needed(); el.click(timeout=2000)
-        else:
-            el.scroll_into_view_if_needed(); el.click(timeout=2000)
+        el.scroll_into_view_if_needed(); el.click(timeout=2000, force=True)
     with time_section("next-month: find & click"):
         clicked = False
         sel_cfg = (facility or {}).get("next_month_selector")
@@ -1093,7 +1093,7 @@ def click_next_month(page, label_primary="次の月", calendar_root=None, prev_m
                 els = page.locator("a[href*='moveCalender']").all()
                 chosen = None; chosen_date = None
                 cur01 = None
-                m = re.match(r"(\d{4})年(\d{1,2})月", prev_month_text)
+                m = re.match(r"(\\d{4})年(\\d{1,2})月", prev_month_text)
                 if m: cur01 = f"{int(m.group(1)):04d}{int(m.group(2)):02d}01"
                 for e in els:
                     href = e.get_attribute("href") or ""
