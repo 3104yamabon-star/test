@@ -1,11 +1,12 @@
 
 # -*- coding: utf-8 -*-
 """
-さいたま市 施設予約システム 空き状況監視（フル版）
+さいたま市 施設予約システム 空き状況監視（フル版 + 時間帯表示の詳細ログ）
 - 月間カレンダー（○/△/×）の差分通知
-- 改善した日を詳細（週表示）へ遷移して、時間帯（例：15時～17時）まで抽出・通知
+- 改善した日を「週表示（時間帯表示）」へ遷移し、時間帯（例：15時～17時）まで抽出・通知
 - 施設別UIに対応する facility-aware 設計（special_selectors / special_pre_actions / step_hints / detail_view）
 - スナップショット保存・ローテーション、Discord通知（embed/text両対応）
+- 週表示への遷移・抽出の各段階でログ＆証跡（HTML/PNG）を保存（TS_DEBUG=1）
 """
 
 import os
@@ -48,6 +49,9 @@ except Exception:
 
 INCLUDE_HOLIDAY_FLAG = os.getenv("DISCORD_INCLUDE_HOLIDAY", "1").strip() == "1"
 
+# 時間帯ログ（Transition Step Debug）
+DEBUG_TS = os.getenv("TS_DEBUG", "1").strip() == "1"  # 1=詳細ログON / 0=OFF
+
 BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_ROOT = Path(os.getenv("OUTPUT_DIR", str(BASE_DIR / "snapshots"))).resolve()
 CONFIG_PATH = BASE_DIR / "config.json"
@@ -60,6 +64,32 @@ FACILITY_TITLE_ALIAS = {
     "鈴谷公民館": "鈴谷",
     "浦和駒場体育館": "駒場",
 }
+
+# ====== ログ補助 ======
+def _log(msg: str):
+    if DEBUG_TS:
+        print(f"[TS] {msg}", flush=True)
+
+def _screenshot(page, path: Path):
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(path))
+        _log(f"screenshot saved: {path.name}")
+    except Exception as e:
+        _log(f"shot failed: {e}")
+
+def _dump_week_html(page, path: Path):
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 週表示テーブルがあればそれ、なければ body 全体
+        if page.locator("table.akitablelist").count() > 0:
+            html = page.locator("table.akitablelist").first.evaluate("el => el.outerHTML")
+        else:
+            html = page.evaluate("() => document.documentElement.outerHTML")
+        safe_write_text(path, html)
+        _log(f"html saved: {path.name} ({len(html)} chars)")
+    except Exception as e:
+        _log(f"html dump failed: {e}")
 
 # ====== ユーティリティ ======
 @contextmanager
@@ -947,7 +977,36 @@ def rotate_snapshot_files(outdir: Path, max_png: int = 50, max_html: int = 50) -
     except Exception as e:
         print(f"[WARN] rotate_snapshot_files failed: {e}", flush=True)
 
-# ====== 週表示への遷移＆時間帯抽出 ======
+# ====== 週表示への遷移支援 ======
+def ensure_month_view(page) -> bool:
+    """
+    週表示（prwca1000等）に居る場合に「一ヶ月検索結果」（prwmn1000）へ切替。
+    画面内に月表示の目印となる table.m_akitablelist が現れるまで誘導する。
+    """
+    try:
+        if page.locator("table.m_akitablelist").count() > 0:
+            return True
+        candidates = [
+            "a:has-text('一ヶ月検索結果')",
+            "a:has-text('一ヶ月')",
+            "img[alt='一ヶ月検索結果']",
+            "a[href*='rsvWInstSrchMonthVacantAction']",
+            "a[href*='moveCalender']",
+        ]
+        for sel in candidates:
+            try:
+                el = page.locator(sel).first
+                if el.count() > 0:
+                    el.scroll_into_view_if_needed()
+                    el.click(timeout=2000)
+                    break
+            except Exception:
+                pass
+        page.wait_for_timeout(300)
+        return page.locator("table.m_akitablelist").count() > 0
+    except Exception:
+        return False
+
 def open_day_detail(page, calendar_root, y: int, m: int, d: int, facility: Dict[str, Any]) -> bool:
     """月カレンダー上の対象日セルをクリックして詳細（週表示）へ"""
     try:
@@ -1056,8 +1115,7 @@ def parse_day_timebands(page, facility_name: str, y: int, m: int, d: int) -> Lis
         td  = row.locator("td.akitablelist").nth(col)
         img = td.locator("img").first
         st  = _status_from_img(img, common)
-        for r in ranges:
-            out.append({"label": label_raw, "range": r, "status": st})
+        out.extend({"label": label_raw, "range": r, "status": st} for r in ranges)
     return out
 
 # ====== 時間帯スナップショットと通知 ======
@@ -1167,7 +1225,7 @@ def run_monitor():
                 if lines:
                     send_aggregate_lines(DISCORD_WEBHOOK_URL, short, month_text, lines)
 
-                # --- 時間帯通知（当月） ---
+                # --- 時間帯通知（当月：詳細ログ付き） ---
                 ym = _parse_month_text(month_text)
                 if ym:
                     y, mo = ym
@@ -1186,36 +1244,112 @@ def run_monitor():
                         if (prev_st, cur_st) in IMPROVE_TRANSITIONS:
                             improved_days.append(di)
 
+                    _log(f"improved_days={improved_days}")
+
+                    dv = (load_config().get("detail_view") or {})
+                    fac_cfg = (dv.get(facility.get("name", "")) or {})
+                    has_monthly = bool(fac_cfg.get("monthly"))
+
                     for di in improved_days:
+                        step_dir = outdir / f"_{y}{mo:02d}{di:02d}"
+                        step_dir.mkdir(parents=True, exist_ok=True)
+                        _log(f"=== day {y}/{mo}/{di} ===")
+
                         opened = False
-                        # 岩槻など月表示から直接開けるケース
-                        opened = open_day_detail_from_month(page, y, mo, di, facility)
+                        before_url = page.url
+
+                        # 1) 月表示がある施設は先に切り替え → selectDay(...)
+                        if has_monthly:
+                            _log("ensure month-view ...")
+                            ok_mv = ensure_month_view(page)
+                            _log(f"ensure month-view => {ok_mv}")
+                            if not ok_mv:
+                                try:
+                                    _log("navigate_to_facility() to re-enter flow")
+                                    navigate_to_facility(page, facility)
+                                    ok_mv = ensure_month_view(page)
+                                    _log(f"retry ensure month-view => {ok_mv}")
+                                except Exception as e:
+                                    _log(f"month-view retry failed: {e}")
+                                    ok_mv = False
+                            if ok_mv:
+                                _log("click selectDay(...)")
+                                opened = open_day_detail_from_month(page, y, mo, di, facility)
+                                _log(f"open_day_detail_from_month => {opened}")
+
+                        # 2) フォールバック：月カレンダーセルをクリック
                         if not opened:
-                            # 月カレンダーrootからセルクリックで開く（フォールバック）
+                            _log("fallback: click day cell on month grid")
                             try:
                                 opened = open_day_detail(page, cal_root, y, mo, di, facility)
-                            except Exception:
+                            except Exception as e:
+                                _log(f"open_day_detail exception: {e}")
                                 opened = False
+                            _log(f"open_day_detail => {opened}")
 
-                        if not opened:
-                            print(f"[WARN] failed to open week view for {y}/{mo}/{di}", flush=True)
+                        after_url = page.url
+                        _log(f"url before={before_url}")
+                        _log(f"url after ={after_url}")
+
+                        # 3) 週表示テーブルの出現確認
+                        week_ok = (page.locator("table.akitablelist").count() > 0)
+                        _log(f"week table present? => {week_ok}")
+                        if not opened or not week_ok:
+                            _log("OPEN or WEEK-VIEW FAILED; capturing evidences ...")
+                            _screenshot(page, step_dir / "failed_open.png")
+                            _dump_week_html(page, step_dir / "failed_open.html")
                             continue
 
+                        # 4) 対象日ヘッダのサンプル
+                        try:
+                            headers = page.locator((dv.get("common") or {}).get("date_header_selector"))
+                            hdr_cnt = headers.count()
+                            hdr_snippet = []
+                            for i in range(min(hdr_cnt, 8)):
+                                t = (headers.nth(i).inner_text() or "").strip().replace("\n","")
+                                hdr_snippet.append(t)
+                            _log(f"date headers sample={hdr_snippet}")
+                        except Exception as e:
+                            _log(f"header read failed: {e}")
+
+                        # 5) 時間帯抽出
+                        _log("parse_day_timebands ...")
                         slots = parse_day_timebands(page, facility.get("name",""), y, mo, di)
+                        _log(f"slots parsed: {len(slots)} rows")
+                        for i, s in enumerate(slots[:20], 1):
+                            _log(f"  [{i:02d}] label='{s['label']}' range={s['range']} status={s['status']}")
+
+                        # 6) 週表示のHTMLとスクショ保存
+                        _dump_week_html(page, step_dir / "weekview.html")
+                        try:
+                            week_el = page.locator("table.akitablelist").first
+                            week_el.screenshot(path=str(step_dir / "weekview.png"))
+                            _log("weekview screenshot saved")
+                        except Exception as e:
+                            _log(f"weekview screenshot failed: {e}")
+                            _screenshot(page, step_dir / "weekview_full.png")
+
+                        # 7) 差分判定 & 通知
                         prev_slots_payload = load_day_slots(outdir, di)
                         prev_slots = (prev_slots_payload or {}).get("slots") if prev_slots_payload else []
                         save_day_slots(outdir, di, slots)
+
+                        cnt = {"○":0, "△":0, "×":0, "未判定":0}
+                        for s in slots: cnt[s["status"]] = cnt.get(s["status"],0) + 1
+                        _log(f"slot stats: ○={cnt['○']} △={cnt['△']} ×={cnt['×']} 未判定={cnt['未判定']}")
+
                         lines_ts = build_time_slot_improvement_lines(short, y, mo, di, prev_slots, slots)
+                        _log(f"notif lines: {len(lines_ts)}")
                         if lines_ts:
                             send_aggregate_lines(DISCORD_WEBHOOK_URL, short, month_text, lines_ts)
 
-                        # 週→月へ戻す（安定のため施設トップから再遷移）
+                        # 8) 次の改善日に備え、施設トップ→当月へ戻す（安定化）
                         try:
                             navigate_to_facility(page, facility)
                             month_text = get_current_year_month_text(page) or month_text
                             cal_root = locate_calendar_root(page, month_text or "予約カレンダー", facility)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _log(f"return to month failed: {e}")
 
                 # --- 月移動ループ ---
                 shifts = facility.get("month_shifts", [0,1])
