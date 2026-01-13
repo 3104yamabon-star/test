@@ -977,7 +977,7 @@ def rotate_snapshot_files(outdir: Path, max_png: int = 50, max_html: int = 50) -
     except Exception as e:
         print(f"[WARN] rotate_snapshot_files failed: {e}", flush=True)
 
-# ====== 週表示への遷移支援 ======
+# ====== 週表示への遷移支援（全施設：月表示→日クリック→週表示） ======
 def ensure_month_view(page) -> bool:
     """
     週表示（prwca1000等）に居る場合に「一ヶ月検索結果」（prwmn1000）へ切替。
@@ -1008,8 +1008,12 @@ def ensure_month_view(page) -> bool:
         return False
 
 def open_day_detail(page, calendar_root, y: int, m: int, d: int, facility: Dict[str, Any]) -> bool:
-    """月カレンダー上の対象日セルをクリックして詳細（週表示）へ"""
+    """月カレンダー上の対象日セルをクリックして詳細（週表示）へ。
+    - <td> 直クリックではなく、セル内の <a> または <img> を優先してクリック
+    - クリック後、URLが変わる or 週表示テーブルが出る まで確認し、失敗なら False
+    """
     try:
+        before = page.url
         pat = re.compile(rf"\b{d}\s*日\b")
         cells = calendar_root.locator(":scope tbody td, :scope [role='gridcell']")
         target = None
@@ -1021,14 +1025,44 @@ def open_day_detail(page, calendar_root, y: int, m: int, d: int, facility: Dict[
                 target = el
                 break
         if not target:
+            _log(f"open_day_detail: target day '{d}日' cell not found")
             return False
-        target.scroll_into_view_if_needed()
-        target.click(timeout=2000)
+
+        # 優先クリック順: <a> → <img> → <td>
+        clicked = False
+        try:
+            alink = target.locator("a").first
+            if alink.count() > 0:
+                alink.scroll_into_view_if_needed()
+                alink.click(timeout=2000)
+                clicked = True
+        except Exception:
+            pass
+        if not clicked:
+            try:
+                img = target.locator("a img, img").first
+                if img.count() > 0:
+                    img.scroll_into_view_if_needed()
+                    img.click(timeout=2000)
+                    clicked = True
+            except Exception:
+                pass
+        if not clicked:
+            target.scroll_into_view_if_needed()
+            target.click(timeout=2000)
+
+        # 遷移検証：URL変化 or 週表示テーブル出現
         dv = (load_config().get("detail_view") or {})
         hint = (dv.get("common") or {}).get("week_table_selector", "table.akitablelist")
-        wait_next_step_ready(page, css_hint=hint)
-        return True
-    except Exception:
+        page.wait_for_timeout(300)  # 小休止
+        after = page.url
+        week_ok = (page.locator(hint).count() > 0)
+        _log(f"open_day_detail: clicked; url before={before} after={after} week_ok={week_ok}")
+        if (after != before) or week_ok:
+            return True
+        return False
+    except Exception as e:
+        _log(f"open_day_detail exception: {e}")
         return False
 
 def open_day_detail_from_month(page, y: int, m: int, d: int, facility: Dict[str, Any]) -> bool:
@@ -1051,12 +1085,17 @@ def open_day_detail_from_month(page, y: int, m: int, d: int, facility: Dict[str,
                 break
         if not target:
             return False
+        before = page.url
         target.scroll_into_view_if_needed()
         target.click(timeout=2000)
         hint = (dv.get("common") or {}).get("week_table_selector", "table.akitablelist")
         wait_next_step_ready(page, css_hint=hint)
-        return True
-    except Exception:
+        after = page.url
+        week_ok = (page.locator(hint).count() > 0)
+        _log(f"open_day_detail_from_month: url before={before} after={after} week_ok={week_ok}")
+        return week_ok or (after != before)
+    except Exception as e:
+        _log(f"open_day_detail_from_month exception: {e}")
         return False
 
 def _status_from_img(img_el, common_cfg) -> Optional[str]:
@@ -1225,7 +1264,7 @@ def run_monitor():
                 if lines:
                     send_aggregate_lines(DISCORD_WEBHOOK_URL, short, month_text, lines)
 
-                # --- 時間帯通知（当月：詳細ログ付き） ---
+                # --- 時間帯通知（当月：詳細ログ付き / 全施設：月表示→週表示） ---
                 ym = _parse_month_text(month_text)
                 if ym:
                     y, mo = ym
@@ -1248,7 +1287,7 @@ def run_monitor():
 
                     dv = (load_config().get("detail_view") or {})
                     fac_cfg = (dv.get(facility.get("name", "")) or {})
-                    has_monthly = bool(fac_cfg.get("monthly"))
+                    has_monthly = True  # 全施設が月表示から遷移する前提
 
                     for di in improved_days:
                         step_dir = outdir / f"_{y}{mo:02d}{di:02d}"
@@ -1258,34 +1297,34 @@ def run_monitor():
                         opened = False
                         before_url = page.url
 
-                        # 1) 月表示がある施設は先に切り替え → selectDay(...)
-                        if has_monthly:
-                            _log("ensure month-view ...")
-                            ok_mv = ensure_month_view(page)
-                            _log(f"ensure month-view => {ok_mv}")
-                            if not ok_mv:
-                                try:
-                                    _log("navigate_to_facility() to re-enter flow")
-                                    navigate_to_facility(page, facility)
-                                    ok_mv = ensure_month_view(page)
-                                    _log(f"retry ensure month-view => {ok_mv}")
-                                except Exception as e:
-                                    _log(f"month-view retry failed: {e}")
-                                    ok_mv = False
-                            if ok_mv:
-                                _log("click selectDay(...)")
-                                opened = open_day_detail_from_month(page, y, mo, di, facility)
-                                _log(f"open_day_detail_from_month => {opened}")
-
-                        # 2) フォールバック：月カレンダーセルをクリック
-                        if not opened:
-                            _log("fallback: click day cell on month grid")
+                        # 1) 必ず月表示へ切り替え → selectDay(...) or 日セル内リンククリック
+                        _log("ensure month-view ...")
+                        ok_mv = ensure_month_view(page)
+                        _log(f"ensure month-view => {ok_mv}")
+                        if not ok_mv:
                             try:
-                                opened = open_day_detail(page, cal_root, y, mo, di, facility)
+                                _log("navigate_to_facility() to re-enter flow")
+                                navigate_to_facility(page, facility)
+                                ok_mv = ensure_month_view(page)
+                                _log(f"retry ensure month-view => {ok_mv}")
                             except Exception as e:
-                                _log(f"open_day_detail exception: {e}")
+                                _log(f"month-view retry failed: {e}")
+                                ok_mv = False
+
+                        if ok_mv:
+                            _log("try selectDay(...) first")
+                            opened = open_day_detail_from_month(page, y, mo, di, facility)
+                            _log(f"open_day_detail_from_month => {opened}")
+
+                        # 2) フォールバック：月グリッドの該当日セル内リンクをクリック
+                        if not opened and ok_mv:
+                            try:
+                                cal_tbl = page.locator("table.m_akitablelist").first
+                                opened = open_day_detail(page, cal_tbl, y, mo, di, facility)
+                                _log(f"open_day_detail (fallback) => {opened}")
+                            except Exception as e:
+                                _log(f"open_day_detail fallback exception: {e}")
                                 opened = False
-                            _log(f"open_day_detail => {opened}")
 
                         after_url = page.url
                         _log(f"url before={before_url}")
