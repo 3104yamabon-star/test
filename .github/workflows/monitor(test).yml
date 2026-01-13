@@ -1,0 +1,254 @@
+
+name: Facility Availability Monitor
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write           # PR作成＆ブランチpushに必要
+  pull-requests: write      # PR作成/更新に必要
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: facility-monitor
+      cancel-in-progress: false
+
+    env:
+      # ===== 共通環境変数 =====
+      PYTHONUNBUFFERED: "1"
+      OUTPUT_DIR: snapshots
+      PLAYWRIGHT_BROWSERS_PATH: ~/.cache/ms-playwright
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      GRACE_MS: "600"
+
+      # ===== 監視時間帯（JST） =====
+      MONITOR_FORCE: "0"
+      MONITOR_START_HOUR: "5"
+      MONITOR_END_HOUR: "23"
+      MONITOR_END_MINUTE: "55"
+
+      # ===== PR / ブランチ名（実行ごとに一意） =====
+      SNAP_PR_BRANCH: auto/snapshots-${{ github.run_id }}
+
+    steps:
+      # ─────────────────────────────────────────────
+      # ★ 超前段チェック：JSTの現在時刻で時間帯判定（時間外は即終了）
+      # ─────────────────────────────────────────────
+      - name: Check monitoring window (JST, ultra-early)
+        id: window
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "[INFO] Ultra-early window check (JST)..."
+
+          # FORCE指定なら常に実行
+          if [ "${MONITOR_FORCE:-0}" = "1" ]; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+            echo "[INFO] MONITOR_FORCE=1 → 時間帯に関係なく実行します。"
+            exit 0
+          fi
+
+          # JST現在時刻
+          H=$(TZ=Asia/Tokyo date +%H)
+          M=$(TZ=Asia/Tokyo date +%M)
+
+          SH=${MONITOR_START_HOUR:-5}
+          EH=${MONITOR_END_HOUR:-23}
+          EM=${MONITOR_END_MINUTE:-59}
+
+          in_window=0
+          if [ "$H" -gt "$SH" ] && [ "$H" -lt "$EH" ]; then
+            in_window=1
+          elif [ "$H" -eq "$SH" ]; then
+            in_window=1
+          elif [ "$H" -eq "$EH" ] && [ "$M" -le "$EM" ]; then
+            in_window=1
+          fi
+
+          echo "ok=$in_window" >> "$GITHUB_OUTPUT"
+          echo "[INFO] Window (JST): ${SH}:00 - ${EH}:${EM} / Now=${H}:${M}"
+          if [ "$in_window" -ne 1 ]; then
+            echo "[INFO] Outside window. Early exit before any setup."
+          else
+            echo "[INFO] Within window. Continue."
+          fi
+
+      - name: Early exit outside window
+        if: steps.window.outputs.ok != '1'
+        run: |
+          echo "[INFO] Exiting early. (No setup / No Python / No Playwright)"
+          exit 0
+
+      # ─────────────────────────────────────────────
+      # 以降：時間内のみ実行
+      # ─────────────────────────────────────────────
+      - name: Checkout
+        if: steps.window.outputs.ok == '1'
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        if: steps.window.outputs.ok == '1'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        if: steps.window.outputs.ok == '1'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Prepare Playwright cache dir
+        if: steps.window.outputs.ok == '1'
+        run: mkdir -p ~/.cache/ms-playwright
+
+      - name: Install dependencies
+        if: steps.window.outputs.ok == '1'
+        run: |
+          set -e
+          pip install -r requirements.txt
+          python - <<'PY'
+          import subprocess, sys
+          try:
+              import playwright  # noqa
+              print("[INFO] playwright package is present.")
+          except Exception:
+              print("[INFO] playwright not found; installing pinned version (1.46.0)...")
+              subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright==1.46.0"])
+          PY
+
+      - name: Compute Playwright cache key
+        if: steps.window.outputs.ok == '1'
+        id: pw
+        shell: bash
+        run: |
+          set -euo pipefail
+          get_ver_py=$(python - <<'PY'
+          ver=""
+          try:
+              import importlib.metadata as m
+              ver = m.version("playwright")
+          except Exception:
+              pass
+          print(ver)
+          PY
+          )
+          if [ -z "${get_ver_py}" ]; then
+            get_ver_py=$(python -m pip show playwright 2>/dev/null | awk '/Version:/ {print $2}')
+          fi
+          if [ -z "${get_ver_py}" ]; then
+            echo "[ERROR] Failed to determine Playwright version."
+            exit 1
+          fi
+          echo "version=${get_ver_py}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers (Chromium)
+        if: steps.window.outputs.ok == '1'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-msplaywright-${{ steps.pw.outputs.version }}
+          restore-keys: |
+            ${{ runner.os }}-msplaywright-
+
+      - name: Show workspace info
+        if: steps.window.outputs.ok == '1'
+        run: |
+          echo "PWD=$(pwd)"
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          python --version
+
+      - name: Git safe.directory
+        if: steps.window.outputs.ok == '1'
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Validate config.json
+        if: steps.window.outputs.ok == '1'
+        run: python -m json.tool config.json > /dev/null
+
+      - name: Run monitor (windowed)
+        if: steps.window.outputs.ok == '1'
+        env:
+          OUTPUT_DIR: ${{ env.OUTPUT_DIR }}
+          BASE_URL:  ${{ secrets.BASE_URL }}
+          DISCORD_WEBHOOK_URL: ${{ env.DISCORD_WEBHOOK_URL }}
+          DISCORD_MENTION_USER_ID: ${{ secrets.DISCORD_MENTION_USER_ID }}
+          DISCORD_FORCE_TEXT: "1"
+          MONITOR_FORCE: "0"
+          MONITOR_START_HOUR: ${{ env.MONITOR_START_HOUR }}
+          MONITOR_END_HOUR:   ${{ env.MONITOR_END_HOUR }}
+          MONITOR_END_MINUTE: ${{ env.MONITOR_END_MINUTE }}
+          GRACE_MS: ${{ env.GRACE_MS }}
+        run: |
+          echo "[INFO] Starting monitor.py ..."
+          python -u monitor.py
+          echo "[INFO] monitor.py finished."
+
+      - name: Show snapshot files (detailed)
+        if: steps.window.outputs.ok == '1'
+        run: |
+          echo "----- snapshots tree -----"
+          find "${{ env.OUTPUT_DIR }}" -type f -printf "%T@ %TY-%Tm-%Td %TH:%TM:%TS %p %s bytes\n" | sort -n || true
+          echo "----- git status/diff -----"
+          git status "${{ env.OUTPUT_DIR }}/" || true
+          git diff --name-only "${{ env.OUTPUT_DIR }}/" || true
+
+      - name: Ensure snapshots tracked by Git
+        if: steps.window.outputs.ok == '1'
+        run: |
+          echo "----- git check-ignore -----"
+          git check-ignore -v "${{ env.OUTPUT_DIR }}" "${{ env.OUTPUT_DIR }}/**" || true
+          git add -f "${{ env.OUTPUT_DIR }}/" || true
+
+      # ─────────────────────────────────────────────
+      # ★ 直 push をやめ、作業ブランチへコミット → PRを自動作成
+      #    → Auto-merge 設定により即マージ（リポジトリ側で許可ONが必要）
+      # ─────────────────────────────────────────────
+
+      - name: Commit snapshots to temp branch
+        if: steps.window.outputs.ok == '1'
+        run: |
+          set -e
+          BR="${SNAP_PR_BRANCH}"
+          git checkout -b "$BR"
+
+          if [[ -n "$(git status --porcelain '${{ env.OUTPUT_DIR }}/')" ]]; then
+            git commit -m "chore: update snapshots ($(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M:%S JST'))"
+          else
+            echo "[INFO] No snapshot changes. Creating empty commit to keep run history."
+            git commit -m "chore: run without snapshot changes ($(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M:%S JST'))" --allow-empty || true
+          fi
+
+          git push origin "$BR"
+
+      - name: Create Pull Request (with auto-merge label)
+        if: steps.window.outputs.ok == '1'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          title: "chore: snapshots update"
+          body: |
+            Automated snapshots update by workflow.
+            - Run: ${{ github.run_id }}
+            - Time: ${{ steps.window.outputs.now || '' }}
+          base: main
+          branch: ${{ env.SNAP_PR_BRANCH }}
+          labels: auto-merge
+          draft: false
+
+      # 任意：Artifactsにもアップロード（履歴確認用）
+      - name: Upload snapshots artifact
+        if: steps.window.outputs.ok == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: snapshots-${{ github.run_id }}
+          path: ${{ env.OUTPUT_DIR }}/
+          if-no-files-found: warn
