@@ -1174,6 +1174,7 @@ def apply_post_facility_steps(page, facility: Dict[str, Any]) -> None:
                 print(f"[WARN] apply_post_facility_steps: error on '{label}': {e}", flush=True)
 
 # ====== メイン（施設単位の保存・通知・月遷移） ======
+
 def run_monitor():
     print("[INFO] run_monitor: start", flush=True)
     print(f"[INFO] BASE_DIR={BASE_DIR} cwd={Path.cwd()} OUTPUT_ROOT={OUTPUT_ROOT}", flush=True)
@@ -1191,39 +1192,38 @@ def run_monitor():
     max_png_default = int(cfg_ret.get("max_files_per_month_png", 50))
     max_html_default = int(cfg_ret.get("max_files_per_month_html", 50))
 
-    
-with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True)
-    context = browser.new_context()
-    page = context.new_page()
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context()
+        page = context.new_page()
 
-    for idx, facility in enumerate(facilities):
-        alias = FACILITY_TITLE_ALIAS.get(facility.get('name',''), facility.get('name','')) or facility.get('name','')
-        print(f"[INFO] === Facility stage begin: {alias} (#{idx+1}/{len(facilities)}) ===", flush=True)
-        try:
-            if idx == 0:
-                print("[INFO] first facility: run full sequence", flush=True)
-                navigate_to_facility(page, facility)
-            else:
-                # ★ここから戻りフローが始まることを明示
-                print("[INFO] trying back from month-view to facility/build list ...", flush=True)
-                ok_back = back_to_facility_list(page)
-                if not ok_back:
-                    print("[WARN] back failed; fallback to full sequence", flush=True)
+        for idx, facility in enumerate(facilities):
+            alias = FACILITY_TITLE_ALIAS.get(facility.get('name',''), facility.get('name','')) or facility.get('name','')
+            print(f"[INFO] === Facility stage begin: {alias} (#{idx+1}/{len(facilities)}) ===", flush=True)
+            try:
+                if idx == 0:
+                    print("[INFO] first facility: run full sequence", flush=True)
                     navigate_to_facility(page, facility)
                 else:
-                    print("[INFO] back succeeded; now selecting next facility by BldCd", flush=True)
-                    code = facility.get("facility_code") or FACILITY_ALIAS_TO_BLDCD.get(alias, "")
-                    ok_sel = select_facility_by_code(page, code, config)
-                    if not ok_sel:
-                        print(f"[WARN] BldCd click failed (code={code}); fallback to full sequence", flush=True)
+                    # ★ここから戻りフローが始まることを明示
+                    print("[INFO] trying back from month-view to facility/build list ...", flush=True)
+                    ok_back = back_to_facility_list(page)
+                    if not ok_back:
+                        print("[WARN] back failed; fallback to full sequence", flush=True)
                         navigate_to_facility(page, facility)
                     else:
-                        print("[INFO] BldCd click succeeded; applying post-steps (if any)", flush=True)
-                        apply_post_facility_steps(page, facility)
-                        wait_calendar_ready(page, facility)
-           
-                # ===== 以降：従来の月保存・通知・月遷移ロジック（変更なし） =====
+                        print("[INFO] back succeeded; now selecting next facility by BldCd", flush=True)
+                        code = facility.get("facility_code") or FACILITY_ALIAS_TO_BLDCD.get(alias, "")
+                        ok_sel = select_facility_by_code(page, code, config)
+                        if not ok_sel:
+                            print(f"[WARN] BldCd click failed (code={code}); fallback to full sequence", flush=True)
+                            navigate_to_facility(page, facility)
+                        else:
+                            print("[INFO] BldCd click succeeded; applying post-steps (if any)", flush=True)
+                            apply_post_facility_steps(page, facility)
+                            wait_calendar_ready(page, facility)
+
+                # ===== （この下は従来の保存・通知・月遷移ロジック：変更不要） =====
                 with time_section("get_current_year_month_text"):
                     month_text = get_current_year_month_text(page) or "unknown"
                 cal_root = locate_calendar_root(page, month_text or "予約カレンダー", facility)
@@ -1306,12 +1306,12 @@ with sync_playwright() as p:
                     prev_month_text = month_text2
 
             except Exception as e:
+                # 例外時の証跡（元の実装＋_debugへスクショ）
                 dbg = OUTPUT_ROOT / "_debug"; safe_mkdir(dbg)
-                shot = dbg / f"exception_{alias}_{_dt.now().strftime('%Y%m%d_%H%M%S')}.png"
-                with time_section("screenshot exception"):
-                    try: page.screenshot(path=str(shot))
-                    except Exception: pass
-                safe_write_text(dbg / f"exception_{alias}_{_dt.now().strftime('%Y%m%d_%H%M%S')}.html", page.inner_html("body"))
+                shot = dbg / f"exception_{alias}_{int(time.time())}.png"
+                try: page.screenshot(path=str(shot))
+                except Exception: pass
+                safe_write_text(dbg / f"exception_{alias}_{int(time.time())}.html", page.inner_html("body"))
                 print(f"[ERROR] run_monitor: 施設処理中に例外: {e} (debug: {shot})", flush=True)
                 continue
 
