@@ -1162,6 +1162,7 @@ def _find_day_cell_in_month(page, calendar_root, day_int: int):
             pass
     return None
 
+
 def _header_patterns(month_text: Optional[str], day_int: int) -> List[re.Pattern]:
     """ヘッダ表記の揺れを吸収する正規表現の一覧"""
     pats: List[str] = []
@@ -1169,25 +1170,35 @@ def _header_patterns(month_text: Optional[str], day_int: int) -> List[re.Pattern
     y, mo = (None, None)
     if m:
         y, mo = int(m.group(1)), int(m.group(2))
-    # バリエーション
+
+    # 曜日（日本語）の任意付加: 例「日 水曜日」「 日曜日」など
+    wk_opt = r"(?:\s*[月火水木金土日]曜日)?"
+
+    # バリエーション（スペース揺れも許容）
     if mo:
         pats += [
-            rf"\b{mo}月\s*{day_int}\s*日\b",
-            rf"\b{str(mo).zfill(2)}月\s*{str(day_int).zfill(2)}\s*日\b",
-            rf"\b{mo}\s*/\s*{day_int}\b",
-            rf"\b{str(mo).zfill(2)}\s*/\s*{str(day_int).zfill(2)}\b",
+            rf"\b{mo}\s*月\s*{day_int}\s*日{wk_opt}\b",                      # 1月14日[ 曜日]
+            rf"\b{str(mo).zfill(2)}\s*月\s*{str(day_int).zfill(2)}\s*日{wk_opt}\b",  # 01月14日[ 曜日]
+            rf"\b{mo}\s*/\s*{day_int}{wk_opt}\b",                            # 1/14[ 曜日]
+            rf"\b{str(mo).zfill(2)}\s*/\s*{str(day_int).zfill(2)}{wk_opt}\b",       # 01/14[ 曜日]
         ]
+
+    # 「日だけ」や「数字だけ」のヘッダ（安全性のため末尾に）
     pats += [
-        rf"\b{day_int}\s*日\b",               # 日だけのヘッダ
-        rf"\b{day_int}\s*\(\w\)\b",           # 例：14(水)
-        rf"\b{day_int}\b",                    # 数字のみ（安全な場面のみ）
+        rf"\b{day_int}\s*日{wk_opt}\b",   # 14日[ 曜日]
+        rf"\b{day_int}\b",                # 14（最後の手段）
     ]
+
+    # 年付きのパターン
     if y and mo:
         pats += [
-            rf"\b{y}\s*/\s*{mo}\s*/\s*{day_int}\b",
-            rf"\b{y}年\s*{mo}月\s*{day_int}日\b",
+            rf"\b{y}\s*/\s*{mo}\s*/\s*{day_int}{wk_opt}\b",            # 2026/1/14[ 曜日]
+            rf"\b{y}\s*年\s*{mo}\s*月\s*{day_int}\s*日{wk_opt}\b",     # 2026年1月14日[ 曜日]
         ]
+
+    # コンパイル
     return [re.compile(p) for p in pats]
+
 
 def _find_day_col_index_generic(table, day_int: int, month_text: Optional[str]) -> Optional[int]:
     """thead/先頭行/全thを走査してヘッダ候補から列番号を特定"""
