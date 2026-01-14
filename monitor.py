@@ -294,18 +294,22 @@ def click_sequence_fast(page, labels: List[str], facility: Dict[str, Any] = None
                     wait_next_step_ready(page, css_hint=hint)
 
 # ====== ナビゲーション ======
+
 def navigate_to_facility(page, facility: Dict[str, Any]) -> None:
-    if not BASE_URL:
-        raise RuntimeError("BASE_URL が未設定です。Secrets の BASE_URL に https://saitama.rsv.ws-scs.jp/web/ を設定してください。")
-    with time_section("goto BASE_URL"):
-        page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
     if FAST_ROUTES:
         enable_fast_routes(page)
     page.add_style_tag(content="*{animation-duration:0s !important; transition-duration:0s !important;}")
     page.set_default_timeout(5000)
     click_optional_dialogs_fast(page)
     click_sequence_fast(page, facility.get("click_sequence", []), facility)
+
+    # ★ここで post-step（部屋選択）を実施
+    if facility.get("post_facility_click_steps"):
+        apply_post_facility_steps(page, facility)
+
     wait_calendar_ready(page, facility)
+
 
 # ====== カレンダー準備 ======
 def wait_calendar_ready(page, facility: Dict[str, Any]) -> None:
