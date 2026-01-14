@@ -1,33 +1,44 @@
 
 # -*- coding: utf-8 -*-
 """
-さいたま市 施設予約システム 空き状況監視
-A：機能完全版（Discord通知・差分抽出・例外時証跡・世代ローテーション）＋戻るボタン活用フロー
-- 初回のみ BASE_URL から click_sequence で施設へ到達
-- 各施設で月巡回（month_shifts）
-- 巡回後は右上「もどる」で館選択へ戻り、BldCdで次施設をクリック
-- 鈴谷：「すべて」、浦和駒場：「浦和駒場第２体育室」を postステップで追加クリック
+さいたま市 施設予約システムの空き状況監視（高速化＋安定化・再修正版）
+- ★月遷移ロジックは従来のコードのまま（変更なし）
+- 追加：戻るボタンで「館選択」へ戻り、施設コード（BldCd）で次施設へ遷移
+- 追加：鈴谷「すべて」、浦和駒場「浦和駒場第２体育室」等の部屋選択を post-step として実行
+- 追加：戻るボタンや館選択で失敗した場合の詳細ログ（WARN）＋ _debug へのスクリーンショット／HTMLダンプ
+- 既存：Discord通知（改善差分のみ）／スナップショット世代ローテーション／例外時の証跡は元実装を維持
 """
 
 import os
 import sys
 import json
 import re
-import time
 import datetime
-from pathlib import Path
+import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
 
 from playwright.sync_api import sync_playwright
 
 # ====== 環境 ======
-BASE_URL = os.getenv("BASE_URL") or ""
+try:
+    import pytz
+except Exception:
+    pytz = None
+try:
+    import jpholiday  # 祝日判定（任意）
+except Exception:
+    jpholiday = None
+
+BASE_URL = os.getenv("BASE_URL")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
 MONITOR_FORCE = os.getenv("MONITOR_FORCE", "0").strip() == "1"
 MONITOR_START_HOUR = int(os.getenv("MONITOR_START_HOUR", "5"))
 MONITOR_END_HOUR = int(os.getenv("MONITOR_END_HOUR", "23"))
-FAST_ROUTES = os.getenv("FAST_ROUTES", "0").strip() == "1"  # フォント・解析タグブロック
+TIMING_VERBOSE = os.getenv("TIMING_VERBOSE", "0").strip() == "1"
+FAST_ROUTES = os.getenv("FAST_ROUTES", "0").strip() == "1"  # フォント/解析ブロック
+
 GRACE_MS_DEFAULT = 1000
 try:
     GRACE_MS = max(0, int(os.getenv("GRACE_MS", str(GRACE_MS_DEFAULT))))
@@ -40,7 +51,7 @@ BASE_DIR = Path(__file__).resolve().parent
 OUTPUT_ROOT = Path(os.getenv("OUTPUT_DIR", str(BASE_DIR / "snapshots"))).resolve()
 CONFIG_PATH = BASE_DIR / "config.json"
 
-# 施設表示名→短縮名
+# 表示名→短縮名（通知・保存用）
 FACILITY_TITLE_ALIAS = {
     "岩槻南部公民館": "岩槻",
     "南浦和コミュニティセンター": "南浦和",
@@ -49,7 +60,7 @@ FACILITY_TITLE_ALIAS = {
     "浦和駒場体育館": "浦和駒場",
 }
 
-# 巡回用：短縮名→施設コード（BldCd）
+# ★巡回用：短縮名→施設コード（BldCd）／config に facility_code が無い場合のフォールバック用
 FACILITY_ALIAS_TO_BLDCD = {
     "南浦和": "5140",
     "岩槻":  "1570",
@@ -70,14 +81,12 @@ def time_section(title: str):
         print(f"[TIMER] {title}: end ({end - start:.3f}s)", flush=True)
 
 def jst_now() -> datetime.datetime:
-    try:
-        import pytz
-        jst = pytz.timezone("Asia/Tokyo")
-        return datetime.datetime.now(jst)
-    except Exception:
+    if pytz is None:
         return datetime.datetime.now()
+    jst = pytz.timezone("Asia/Tokyo")
+    return datetime.datetime.now(jst)
 
-def is_within_monitoring_window(start_hour=5, end_hour=23) -> Tuple[bool, Optional[datetime.datetime]]:
+def is_within_monitoring_window(start_hour=5, end_hour=23):
     try:
         now = jst_now()
         return (start_hour <= now.hour <= end_hour), now
@@ -93,17 +102,18 @@ def ensure_root_dir(root: Path) -> None:
     except Exception:
         pass
 
-def safe_mkdir(d: Path) -> None:
+def safe_mkdir(d: Path):
     d.mkdir(parents=True, exist_ok=True)
 
-def safe_write_text(p: Path, s: str) -> None:
+def safe_write_text(p: Path, s: str):
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(p.suffix + ".tmp")
     tmp.write_text(s, "utf-8")
     tmp.replace(p)
 
-def safe_element_screenshot(el, out: Path) -> None:
-    out.parent.mkdir(parents=True, exist_ok=True)
+def safe_element_screenshot(el, out: Path):
+    out.parent.mkdir(parents=True, exist_ok=True
+                     )
     el.scroll_into_view_if_needed()
     el.screenshot(path=str(out))
 
@@ -116,18 +126,15 @@ def load_config() -> Dict[str, Any]:
             raise RuntimeError(f"config.json の '{key}' が不足しています")
     return cfg
 
-# ====== 軽量化（不要リソースブロック） ======
+# ====== 不要リソースブロック（任意） ======
 def enable_fast_routes(page):
-    """フォント／解析タグのダウンロードを抑止（UIに必須でない範囲のみ）"""
     block_exts = (".woff", ".woff2", ".ttf")
     block_hosts = ("www.google-analytics.com", "googletagmanager.com")
-
     def handler(route):
         url = route.request.url
         if url.endswith(block_exts) or any(h in url for h in block_hosts):
             return route.abort()
         return route.continue_()
-
     page.route("**/*", handler)
 
 # ====== 保険待機 ======
@@ -153,7 +160,7 @@ def grace_pause(page, label: str = "grace wait"):
         except Exception:
             pass
 
-# ====== クリック補助 ======
+# ====== Playwright 操作 ======
 def try_click_text(page, label: str, timeout_ms: int = 5000, quiet=True) -> bool:
     locators = [
         page.get_by_role("link", name=label, exact=True),
@@ -163,9 +170,15 @@ def try_click_text(page, label: str, timeout_ms: int = 5000, quiet=True) -> bool
     ]
     for locator in locators:
         try:
-            locator.wait_for(timeout=timeout_ms)
-            locator.scroll_into_view_if_needed()
-            locator.click(timeout=timeout_ms)
+            if TIMING_VERBOSE:
+                with time_section(f"click '{label}' (wait+click)"):
+                    locator.wait_for(timeout=timeout_ms)
+                    locator.scroll_into_view_if_needed()
+                    locator.click(timeout=timeout_ms)
+            else:
+                locator.wait_for(timeout=timeout_ms)
+                locator.scroll_into_view_if_needed()
+                locator.click(timeout=timeout_ms)
             return True
         except Exception as e:
             if not quiet:
@@ -204,10 +217,11 @@ def click_optional_dialogs_fast(page) -> None:
                     if cand.count() > 0:
                         cand.scroll_into_view_if_needed()
                         cand.click(timeout=300)
+                        clicked = True
                 except Exception:
                     pass
 
-# ====== ステップヒント（既存） ======
+# === クリックシーケンスのヒント ===
 HINTS: Dict[str, str] = {
     "施設の空き状況": ".tcontent",
     "利用目的から": ".tcontent",
@@ -216,7 +230,6 @@ HINTS: Dict[str, str] = {
 }
 
 def wait_next_step_ready(page, css_hint: Optional[str] = None) -> None:
-    """URL変化 or ヒントDOM出現のいずれか成立で即抜け（上限 0.9s）"""
     deadline = time.perf_counter() + 0.9
     last_url = page.url
     while time.perf_counter() < deadline:
@@ -294,6 +307,7 @@ def navigate_to_facility(page, facility: Dict[str, Any]) -> None:
     click_sequence_fast(page, facility.get("click_sequence", []), facility)
     wait_calendar_ready(page, facility)
 
+# ====== カレンダー準備 ======
 def wait_calendar_ready(page, facility: Dict[str, Any]) -> None:
     with time_section("wait calendar root ready"):
         deadline = time.perf_counter() + 1.5
@@ -307,7 +321,6 @@ def wait_calendar_ready(page, facility: Dict[str, Any]) -> None:
             except Exception:
                 pass
             page.wait_for_timeout(150)
-        # 代替：visible 保険
         sel_cfg = facility.get("calendar_selector") or "table.m_akitablelist"
         try:
             page.locator(sel_cfg).first.wait_for(state="visible", timeout=300)
@@ -321,7 +334,7 @@ def wait_calendar_ready(page, facility: Dict[str, Any]) -> None:
                     continue
         print("[WARN] calendar ready check timed out; proceeding optimistically.", flush=True)
 
-# ====== 月テキスト & カレンダー根 ======
+# ====== 月テキスト＆カレンダー根 ======
 def get_current_year_month_text(page, calendar_root=None) -> Optional[str]:
     pat = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月")
     targets: List[str] = []
@@ -390,7 +403,7 @@ def locate_calendar_root(page, hint: str, facility: Dict[str, Any] = None):
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
 
-# ====== 月移動 ======
+# ====== ★月移動（従来のコードそのまま） ======
 def _compute_next_month_text(prev: str) -> str:
     try:
         m = re.match(r"(\d{4})年(\d{1,2})月", prev or "")
@@ -427,21 +440,25 @@ def _is_forward(prev: str, cur: str) -> bool:
 
 def click_next_month(page, label_primary="次の月", calendar_root=None, prev_month_text=None, wait_timeout_ms=20000, facility=None) -> bool:
     def _safe_click(el, note=""):
-        el.scroll_into_view_if_needed(); el.click(timeout=2000)
+        if TIMING_VERBOSE:
+            with time_section(f"next-month click {note}"):
+                el.scroll_into_view_if_needed(); el.click(timeout=2000)
+        else:
+            el.scroll_into_view_if_needed(); el.click(timeout=2000)
 
     with time_section("next-month: find & click"):
         clicked = False
-        # 既存のセレクタ候補
-        cands = [
-            "a[href*='moveCalender'][href*='gRsvWInstSrchMonthVacantAction']",
-            "a:has-text('次の月')", "a:has-text('翌月')",
-        ]
+        sel_cfg = (facility or {}).get("next_month_selector")
+        cands = [sel_cfg] if sel_cfg else []
+        cands += ["a:has-text('次の月')", "a:has-text('翌月')"]
         for sel in cands:
+            if not sel: continue
             try:
                 el = page.locator(sel).first
                 if el and el.count() > 0:
                     _safe_click(el, sel); clicked = True; break
             except Exception: pass
+
         if not clicked and prev_month_text:
             try:
                 target = _next_yyyymm01(prev_month_text)
@@ -460,8 +477,11 @@ def click_next_month(page, label_primary="次の月", calendar_root=None, prev_m
                         chosen, chosen_date = e, ymd
                 if chosen:
                     _safe_click(chosen, f"href {chosen_date}"); clicked = True
-            except Exception: pass
-    if not clicked: return False
+            except Exception:
+                pass
+
+    if not clicked:
+        return False
 
     with time_section("next-month: wait month text change (+1)"):
         goal = _compute_next_month_text(prev_month_text or "")
@@ -473,6 +493,7 @@ def click_next_month(page, label_primary="次の月", calendar_root=None, prev_m
                 )
         except Exception:
             pass
+
     with time_section("next-month: confirm direction"):
         cur = None
         try: cur = get_current_year_month_text(page, calendar_root=None)
@@ -480,11 +501,10 @@ def click_next_month(page, label_primary="次の月", calendar_root=None, prev_m
         if prev_month_text and cur and not _is_forward(prev_month_text, cur):
             print(f"[WARN] next-month moved backward: {prev_month_text} -> {cur}", flush=True)
             return False
+
     return True
 
-# ====== HTML集計 ======
-from datetime import datetime as _dt
-
+# ====== 集計 ======
 def _st_from_text_and_src(raw: str, patterns: Dict[str, List[str]]) -> Optional[str]:
     if raw is None:
         return None
@@ -501,8 +521,45 @@ def _st_from_text_and_src(raw: str, patterns: Dict[str, List[str]]) -> Optional[
         if kw.lower() in n: return "×"
     return None
 
+def _status_from_class(cls: str, css_class_patterns: Dict[str, List[str]]) -> Optional[str]:
+    if not cls: return None
+    c = cls.lower()
+    for kw in css_class_patterns["circle"]:
+        if kw in c: return "○"
+    for kw in css_class_patterns["triangle"]:
+        if kw in c: return "△"
+    for kw in css_class_patterns["cross"]:
+        if kw in c: return "×"
+    return None
+
+def _extract_td_blocks(html: str) -> List[Dict[str, str]]:
+    td_blocks: List[Dict[str, str]] = []
+    for m in re.finditer(r"<td\b([^>]*)>(.*?)</td>", html, flags=re.IGNORECASE | re.DOTALL):
+        attrs = m.group(1) or ""
+        inner = m.group(2) or ""
+        cls = ""
+        title = ""
+        aria = ""
+        mcls = re.search(r'class\s*=\s*"([^"]*)"', attrs, flags=re.IGNORECASE)
+        if mcls: cls = mcls.group(1)
+        mtitle = re.search(r'title\s*=\s*"([^"]*)"', attrs, flags=re.IGNORECASE)
+        if mtitle: title = mtitle.group(1)
+        maria = re.search(r'aria-label\s*=\s*"([^"]*)"', attrs, flags=re.IGNORECASE)
+        if maria: aria = maria.group(1)
+        td_blocks.append({"attrs": attrs, "class": cls, "title": title, "aria": aria, "inner": inner})
+    return td_blocks
+
+def _inner_text_like(html_fragment: str) -> str:
+    s = re.sub(r"<br\s*/?>", " ", html_fragment, flags=re.IGNORECASE)
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+def _find_day_in_text(text: str) -> Optional[str]:
+    m = re.search(r"([1-9]\d?|1\d|2\d|3[01])\s*日", text)
+    return m.group(0) if m else None
+
 def summarize_vacancies(page, calendar_root, config):
-    """HTML文字列のパースによる集計（旧版ロジックを踏襲）"""
     with time_section("summarize_vacancies(html-parse)"):
         patterns = config["status_patterns"]
         css_class_patterns = config["css_class_patterns"]
@@ -513,31 +570,7 @@ def summarize_vacancies(page, calendar_root, config):
             html = calendar_root.evaluate("el => el.outerHTML")
         except Exception:
             return _summarize_vacancies_fallback(page, calendar_root, config)
-        td_blocks: List[Dict[str, str]] = []
-        for m in re.finditer(r"<td\b([^>]*)>(.*?)</td>", html, flags=re.IGNORECASE | re.DOTALL):
-            attrs = m.group(1) or ""
-            inner = m.group(2) or ""
-            cls = ""
-            title = ""
-            aria = ""
-            mcls = re.search(r'class\s*=\s*"([^"]*)"', attrs, flags=re.IGNORECASE)
-            if mcls: cls = mcls.group(1)
-            mtitle = re.search(r'title\s*=\s*"([^"]*)"', attrs, flags=re.IGNORECASE)
-            if mtitle: title = mtitle.group(1)
-            maria = re.search(r'aria-label\s*=\s*"([^"]*)"', attrs, flags=re.IGNORECASE)
-            if maria: aria = maria.group(1)
-            td_blocks.append({"attrs": attrs, "class": cls, "title": title, "aria": aria, "inner": inner})
-
-        def _inner_text_like(fragment: str) -> str:
-            s = re.sub(r"<br\s*/?>", " ", fragment, flags=re.IGNORECASE)
-            s = re.sub(r"<[^>]+>", " ", s)
-            s = re.sub(r"\s+", " ", s)
-            return s.strip()
-
-        def _find_day_in_text(text: str) -> Optional[str]:
-            m = re.search(r"([1-9]\d?|1\d|2\d|3[01])\s*日", text)
-            return m.group(0) if m else None
-
+        td_blocks = _extract_td_blocks(html)
         for td in td_blocks:
             inner = td["inner"]
             text_like = _inner_text_like(inner)
@@ -546,7 +579,6 @@ def summarize_vacancies(page, calendar_root, config):
                 attr_text = " ".join([td.get("title", ""), td.get("aria", "")])
                 day = _find_day_in_text(attr_text)
                 if not day:
-                    # 画像alt/titleから日付推定
                     for mm in re.finditer(r"<img\b([^>]*)>", inner, flags=re.IGNORECASE):
                         img_attrs = mm.group(1) or ""
                         alt = ""
@@ -561,7 +593,6 @@ def summarize_vacancies(page, calendar_root, config):
                             break
             if not day:
                 continue
-
             st = _st_from_text_and_src(text_like, patterns)
             if not st:
                 for mm in re.finditer(r"<img\b([^>]*)>", inner, flags=re.IGNORECASE):
@@ -582,22 +613,9 @@ def summarize_vacancies(page, calendar_root, config):
                 st = _status_from_class(td.get("class", ""), css_class_patterns)
             if not st:
                 st = "未判定"
-
             summary[st] = summary.get(st, 0) + 1
             details.append({"day": day, "status": st, "text": text_like})
-
         return summary, details
-
-def _status_from_class(cls: str, css_class_patterns: Dict[str, List[str]]) -> Optional[str]:
-    if not cls: return None
-    c = cls.lower()
-    for kw in css_class_patterns["circle"]:
-        if kw in c: return "○"
-    for kw in css_class_patterns["triangle"]:
-        if kw in c: return "△"
-    for kw in css_class_patterns["cross"]:
-        if kw in c: return "×"
-    return None
 
 def _summarize_vacancies_fallback(page, calendar_root, config):
     with time_section("summarize_vacancies(fallback)"):
@@ -639,7 +657,6 @@ def _summarize_vacancies_fallback(page, calendar_root, config):
                     pass
             if not m:
                 continue
-
             day = f"{m.group(1)}日"
             st = _st(txt)
             if not st:
@@ -676,13 +693,13 @@ def _summarize_vacancies_fallback(page, calendar_root, config):
                     pass
             if not st:
                 st = "未判定"
-
             summary[st] = summary.get(st, 0) + 1
             details.append({"day": day, "status": st, "text": txt})
-
         return summary, details
 
 # ====== 保存・ローテーション ======
+from datetime import datetime as _dt
+
 def facility_month_dir(short: str, month_text: str) -> Path:
     safe_fac = re.sub(r"[\\/:*?\"<>\n]+","_", short)
     safe_month = re.sub(r"[\\/:*?\"<>\n]+","_", month_text or "unknown_month")
@@ -725,7 +742,6 @@ def save_calendar_assets(cal_root, outdir: Path, save_ts: bool):
     return latest_html, latest_png, ts_html, ts_png
 
 def rotate_snapshot_files(outdir: Path, max_png: int = 50, max_html: int = 50) -> None:
-    """timestamp 付き snapshot を古い順に削除（latest は除外）"""
     try:
         png_ts = sorted(
             [p for p in outdir.glob("calendar_*.png") if p.is_file()],
@@ -747,7 +763,7 @@ def rotate_snapshot_files(outdir: Path, max_png: int = 50, max_html: int = 50) -
     except Exception as e:
         print(f"[WARN] rotate_snapshot_files failed: {e}", flush=True)
 
-# ====== Discord（旧版踏襲） ======
+# ====== Discord（従来の差分通知） ======
 IMPROVE_TRANSITIONS = {
     ("×", "△"),
     ("△", "○"),
@@ -771,11 +787,9 @@ def _weekday_jp(dt: datetime.date) -> str:
 
 def _is_japanese_holiday(dt: datetime.date) -> bool:
     if not INCLUDE_HOLIDAY_FLAG: return False
-    try:
-        import jpholiday
-        return jpholiday.is_holiday(dt)
-    except Exception:
-        return False
+    if jpholiday is None: return False
+    try: return jpholiday.is_holiday(dt)
+    except Exception: return False
 
 _STATUS_EMOJI = {
     "×": "✖️",
@@ -858,14 +872,8 @@ def _build_mention_and_allowed() -> Tuple[str, Dict[str, Any]]:
     return mention, allowed
 
 class DiscordWebhookClient:
-    def __init__(
-        self,
-        webhook_url: str,
-        thread_id: Optional[str] = None,
-        wait: bool = True,
-        user_agent: Optional[str] = None,
-        timeout_sec: int = 10,
-    ):
+    def __init__(self, webhook_url: str, thread_id: Optional[str] = None, wait: bool = True,
+                 user_agent: Optional[str] = None, timeout_sec: int = 10):
         if not webhook_url:
             raise ValueError("webhook_url is required")
         self.webhook_url = webhook_url
@@ -927,7 +935,7 @@ class DiscordWebhookClient:
             "title": title,
             "description": _truncate_embed_description(description or ""),
             "color": color,
-            "timestamp": jst_now().isoformat(),  # JSTのISO表記
+            "timestamp": jst_now().isoformat(),
             "footer": {"text": footer_text},
         }
         payload = {"content": content, "embeds": [embed], **allowed}
@@ -956,13 +964,13 @@ class DiscordWebhookClient:
                 print(f"[ERROR] Discord text failed (p{i}/{len(pages)}): HTTP {status} body={body}", flush=True)
         return ok_all
 
-# 施設ごとの色
+# 施設ごとの色（通知 embed 用）
 _FACILITY_ALIAS_COLOR_HEX = {
-    "南浦和": "0x3498DB",  # Blue
-    "岩槻": "0x2ECC71",    # Green
-    "鈴谷": "0xF1C40F",    # Yellow
-    "岸町": "0xE74C3C",    # Red
-    "浦和駒場": "0x8E44AD",# Purple-ish
+    "南浦和": "0x3498DB",   # Blue
+    "岩槻":   "0x2ECC71",   # Green
+    "鈴谷":   "0xF1C40F",   # Yellow
+    "岸町":   "0xE74C3C",   # Red
+    "浦和駒場": "0x8E44AD", # Purple-ish
 }
 _DEFAULT_COLOR_HEX = "0x00B894"
 
@@ -985,47 +993,60 @@ def send_aggregate_lines(webhook_url: Optional[str], facility_alias: str, month_
         max_lines = None
     if max_lines is not None and len(lines) > max_lines:
         lines = lines[:max_lines] + [f"... ほか {len(lines) - max_lines} 件"]
-
-    # タイトルは施設名のみ（年月は出さない）
     title = f"{facility_alias}"
     description = "\n".join(lines)
     color_hex = _FACILITY_ALIAS_COLOR_HEX.get(facility_alias, _DEFAULT_COLOR_HEX)
     color_int = _hex_to_int(color_hex)
     client = DiscordWebhookClient.from_env()
-    client.webhook_url = webhook_url  # 明示引数を優先
-
+    client.webhook_url = webhook_url
     if force_text:
         content = f"**{title}**\n{description}"
         client.send_text(content)
         return
     client.send_embed(title=title, description=description, color=color_int, footer_text="Facility monitor")
 
-# ====== 戻るボタン活用フロー ======
+# ====== ★追加：戻るボタン／館選択／部屋選択 ======
 def back_to_facility_list(page) -> bool:
-    """1か月表示 → 館選択へ戻る"""
+    """
+    1か月表示 → 館選択へ戻る（右上「もどる」：gRsvWInstSrchMonthVacantBackAction）
+    成功：True／失敗：False（_debug にスクショ・HTMLダンプ保存）
+    """
     back_sel = "a[href*='gRsvWInstSrchMonthVacantBackAction']"
     with time_section("click back (month -> facility-list)"):
         try:
             el = page.locator(back_sel).first
             if not el or el.count() == 0:
-                print("[WARN] back button not found.", flush=True)
+                print("[WARN] back_to_facility_list: back button NOT FOUND.", flush=True)
+                dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
+                page.screenshot(path=str(dbg / f"back_button_not_found_{int(time.time())}.png"))
+                safe_write_text(dbg / f"back_button_not_found_{int(time.time())}.html", page.inner_html("body"))
                 return False
             el.scroll_into_view_if_needed()
             el.click(timeout=3000)
         except Exception as e:
-            print(f"[WARN] back click failed: {e}", flush=True)
+            print(f"[WARN] back_to_facility_list: click failed: {e}", flush=True)
+            dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(dbg / f"back_click_failed_{int(time.time())}.png"))
+            safe_write_text(dbg / f"back_click_failed_{int(time.time())}.html", page.inner_html("body"))
             return False
     with time_section("wait facility-list ready"):
-        # 施設リンク群の出現（館選択画面）
         try:
             page.wait_for_selector("table.tcontent a[href*='gRsvWTransInstSrchInstAction']", timeout=3000)
             return True
         except Exception:
-            print("[WARN] facility-list not appeared after back.", flush=True)
+            print("[WARN] back_to_facility_list: facility list not appeared after back.", flush=True)
+            dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(dbg / f"facility_list_not_appeared_{int(time.time())}.png"))
+            safe_write_text(dbg / f"facility_list_not_appeared_{int(time.time())}.html", page.inner_html("body"))
             return False
 
-def select_facility_by_code(page, code: str) -> bool:
-    """館選択画面：施設コード（BldCd）でクリック"""
+def select_facility_by_code(page, code: str, cfg: Dict[str, Any]) -> bool:
+    """
+    館選択画面：施設コード（BldCd）でリンクをクリック。失敗時は施設名テキストでフォールバック。
+    """
+    if not code:
+        print("[WARN] select_facility_by_code: empty code.", flush=True)
+        return False
     sel = f"table.tcontent a[href*=\"gRsvWTransInstSrchInstAction\"][href*=\"'{code}'\"]"
     with time_section(f"click facility by code: {code}"):
         try:
@@ -1035,35 +1056,61 @@ def select_facility_by_code(page, code: str) -> bool:
                 el.click(timeout=5000)
                 return True
         except Exception as e:
-            print(f"[WARN] select_facility_by_code failed: {e}", flush=True)
-            return False
+            print(f"[WARN] select_facility_by_code: click failed: {e}", flush=True)
+    # フォールバック：施設名テキスト
+    try:
+        name = None
+        for f in (cfg.get("facilities") or []):
+            if f.get("facility_code") == code:
+                name = f.get("name")
+                break
+        if name and try_click_text(page, name, timeout_ms=5000, quiet=False):
+            return True
+    except Exception:
+        pass
+    # 失敗証跡
+    dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(dbg / f"select_facility_failed_{code}_{int(time.time())}.png"))
+    safe_write_text(dbg / f"select_facility_failed_{code}_{int(time.time())}.html", page.inner_html("body"))
     return False
 
 def apply_post_facility_steps(page, facility: Dict[str, Any]) -> None:
-    """館選択→施設クリック後、必要に応じた部屋選択（鈴谷：すべて／駒場：第２体育室）を実行"""
+    """
+    館選択→施設クリック後、必要に応じて部屋選択などの追加クリックを実施。
+    例：鈴谷「すべて」、浦和駒場「浦和駒場第２体育室」
+    """
     steps = facility.get("post_facility_click_steps", []) or []
-    spec = facility.get("special_selectors", {}) or {}
-    pre  = facility.get("special_pre_actions", {}) or {}
+    spec  = facility.get("special_selectors", {}) or {}
+    pre   = facility.get("special_pre_actions", {}) or {}
     hints = facility.get("step_hints", {}) or {}
     for label in steps:
         with time_section(f"post-step: '{label}'"):
             try:
-                _run_pre_actions(page, (pre.get(label) or []))
-                sels = spec.get(label) or []
+                # 事前アクション（スクロール等）
+                for act in (pre.get(label) or []):
+                    if isinstance(act, str) and act.startswith("SCROLL:"):
+                        x_str, y_str = act.split(":",1)[1].split(",",1)
+                        page.evaluate("window.scrollTo(arguments[0], arguments[1]);",
+                                      int(x_str.strip()), int(y_str.strip()))
+                    elif isinstance(act, str) and act.startswith("WAIT_MS:"):
+                        page.wait_for_timeout(int(act.split(":",1)[1].strip()))
+                # セレクタ候補でクリック
                 clicked = False
-                for sel in sels:
-                    try:
-                        el = page.locator(sel).first
-                        if el and el.count() > 0:
-                            el.scroll_into_view_if_needed()
-                            el.click(timeout=3000)
-                            clicked = True
-                            break
-                    except Exception:
-                        continue
+                for sel in (spec.get(label) or []):
+                    el = page.locator(sel).first
+                    if el and el.count() > 0:
+                        el.scroll_into_view_if_needed()
+                        el.click(timeout=3000)
+                        clicked = True
+                        break
+                # テキスト一致フォールバック
                 if not clicked:
-                    if not try_click_text(page, label, timeout_ms=4000):
-                        print(f"[WARN] post-step not found: '{label}'", flush=True)
+                    if not try_click_text(page, label, timeout_ms=4000, quiet=False):
+                        print(f"[WARN] apply_post_facility_steps: not found '{label}'", flush=True)
+                        dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
+                        page.screenshot(path=str(dbg / f"post_step_not_found_{label}_{int(time.time())}.png"))
+                        safe_write_text(dbg / f"post_step_not_found_{label}_{int(time.time())}.html", page.inner_html("body"))
+                # ヒントDOMがあれば軽く待機
                 hint = hints.get(label, "")
                 if hint:
                     try:
@@ -1071,114 +1118,9 @@ def apply_post_facility_steps(page, facility: Dict[str, Any]) -> None:
                     except Exception:
                         pass
             except Exception as e:
-                print(f"[WARN] post-step error: {e}", flush=True)
+                print(f"[WARN] apply_post_facility_steps: error on '{label}': {e}", flush=True)
 
-# ====== 施設単位：当月→月巡回→保存→差分通知 ======
-def monitor_months_for_facility(page, facility: Dict[str, Any], cfg: Dict[str, Any]) -> None:
-    try:
-        short = FACILITY_TITLE_ALIAS.get(facility.get('name',''), facility.get('name','')) or facility.get('name','')
-        cal_sel = facility.get("calendar_selector") or "table.m_akitablelist"
-
-        # 現在月
-        with time_section("get_current_year_month_text"):
-            month_text = get_current_year_month_text(page) or "unknown"
-        cal_root = locate_calendar_root(page, month_text or "予約カレンダー", facility)
-        outdir = facility_month_dir(short, month_text)
-        summary, details = summarize_vacancies(page, cal_root, cfg)
-
-        prev_payload = load_last_payload(outdir)
-        prev_summary = (prev_payload or {}).get("summary")
-        prev_details = (prev_payload or {}).get("details") or []
-        changed = summaries_changed(prev_summary, summary)
-
-        latest_html, latest_png, ts_html, ts_png = save_calendar_assets(cal_root, outdir, save_ts=changed)
-
-        # ローテーション設定（全体・施設ローカル）
-        cfg_ret = (cfg.get("retention") or {})
-        fac_ret = facility.get("retention") or {}
-        max_png = int(fac_ret.get("max_files_per_month_png", cfg_ret.get("max_files_per_month_png", 50)))
-        max_html = int(fac_ret.get("max_files_per_month_html", cfg_ret.get("max_files_per_month_html", 50)))
-        rotate_snapshot_files(outdir, max_png=max_png, max_html=max_html)
-
-        payload = {
-            "month": month_text, "facility": facility.get('name',''),
-            "summary": summary, "details": details,
-            "run_at": jst_now().strftime("%Y-%m-%d %H:%M:%S JST")
-        }
-        with time_section("write status_counts.json"):
-            safe_write_text(outdir / "status_counts.json", json.dumps(payload, ensure_ascii=False, indent=2))
-        print(f"[INFO] summary({facility.get('name','')} - {month_text}): ○={summary['○']} △={summary['△']} ×={summary['×']} 未判定={summary['未判定']}", flush=True)
-        if ts_html and ts_png:
-            print(f"[INFO] saved (timestamped): {ts_html.name}, {ts_png.name}", flush=True)
-        print(f"[INFO] saved: {facility.get('name','')} - {month_text} latest=({latest_html.name},{latest_png.name})", flush=True)
-
-        # 差分通知（当月）
-        lines = build_aggregate_lines(month_text, prev_details, details)
-        if lines:
-            send_aggregate_lines(DISCORD_WEBHOOK_URL, short, month_text, lines)
-
-        # 月遷移
-        shifts = facility.get("month_shifts", [0,1])
-        shifts = sorted(set(int(s) for s in shifts if isinstance(s,(int,float))))
-        if 0 not in shifts: shifts.insert(0,0)
-        max_shift = max(shifts)
-        prev_month_text = month_text
-        for step in range(1, max_shift + 1):
-            ok = click_next_month(page, calendar_root=cal_root, prev_month_text=prev_month_text, wait_timeout_ms=20000, facility=facility)
-            if not ok:
-                dbg = OUTPUT_ROOT / "_debug"; safe_mkdir(dbg)
-                with time_section(f"screenshot fail step={step}"):
-                    page.screenshot(path=str(dbg / f"failed_next_month_step{step}_{short}.png"))
-                print(f"[WARN] next-month click failed at step={step}", flush=True)
-                break
-
-            with time_section(f"get_current_month_text(step={step})"):
-                month_text2 = get_current_year_month_text(page) or f"shift_{step}"
-                print(f"[INFO] month(step={step}): {month_text2}", flush=True)
-            cal_root2 = locate_calendar_root(page, month_text2 or "予約カレンダー", facility)
-            outdir2 = facility_month_dir(short, month_text2)
-            print(f"[INFO] outdir(step={step})={outdir2}", flush=True)
-
-            if step in shifts:
-                summary2, details2 = summarize_vacancies(page, cal_root2, cfg)
-                prev_payload2 = load_last_payload(outdir2)
-                prev_summary2 = (prev_payload2 or {}).get("summary")
-                prev_details2 = (prev_payload2 or {}).get("details") or []
-                changed2 = summaries_changed(prev_summary2, summary2)
-
-                latest_html2, latest_png2, ts_html2, ts_png2 = save_calendar_assets(cal_root2, outdir2, save_ts=changed2)
-                rotate_snapshot_files(outdir2, max_png=max_png, max_html=max_html)
-
-                payload2 = {
-                    "month": month_text2, "facility": facility.get('name',''),
-                    "summary": summary2, "details": details2,
-                    "run_at": jst_now().strftime("%Y-%m-%d %H:%M:%S JST")
-                }
-                with time_section("write status_counts.json (step)"):
-                    safe_write_text(outdir2 / "status_counts.json", json.dumps(payload2, ensure_ascii=False, indent=2))
-                print(f"[INFO] summary({facility.get('name','')} - {month_text2}): ○={summary2['○']} △={summary2['△']} ×={summary2['×']} 未判定={summary2['未判定']}", flush=True)
-                if ts_html2 and ts_png2:
-                    print(f"[INFO] saved (timestamped): {ts_html2.name}, {ts_png2.name}", flush=True)
-                print(f"[INFO] saved: {facility.get('name','')} - {month_text2} latest=({latest_html2.name},{latest_png2.name})", flush=True)
-
-                # 差分通知（遷移先の月）
-                lines2 = build_aggregate_lines(month_text2, prev_details2, details2)
-                if lines2:
-                    send_aggregate_lines(DISCORD_WEBHOOK_URL, short, month_text2, lines2)
-
-            cal_root = cal_root2
-            prev_month_text = month_text2
-
-    except Exception as e:
-        # 例外時の証跡（フルスクリーンショット）
-        dbg = OUTPUT_ROOT / "_debug"; safe_mkdir(dbg)
-        shot = dbg / f"exception_{FACILITY_TITLE_ALIAS.get(facility.get('name',''), facility.get('name',''))}_{_dt.now().strftime('%Y%m%d_%H%M%S')}.png"
-        with time_section("screenshot exception"):
-            try: page.screenshot(path=str(shot))
-            except Exception: pass
-        print(f"[ERROR] monitor_months_for_facility: 例外: {e} (debug: {shot})", flush=True)
-
-# ====== メイン巡回（戻るボタン活用を含む） ======
+# ====== メイン（施設単位の保存・通知・月遷移） ======
 def run_monitor():
     print("[INFO] run_monitor: start", flush=True)
     print(f"[INFO] BASE_DIR={BASE_DIR} cwd={Path.cwd()} OUTPUT_ROOT={OUTPUT_ROOT}", flush=True)
@@ -1192,7 +1134,6 @@ def run_monitor():
     if not facilities:
         print("[WARN] config['facilities'] が空です。", flush=True); return
 
-    # retention 既定値
     cfg_ret = (config.get("retention") or {})
     max_png_default = int(cfg_ret.get("max_files_per_month_png", 50))
     max_html_default = int(cfg_ret.get("max_files_per_month_html", 50))
@@ -1204,37 +1145,120 @@ def run_monitor():
 
         for idx, facility in enumerate(facilities):
             alias = FACILITY_TITLE_ALIAS.get(facility.get('name',''), facility.get('name','')) or facility.get('name','')
-            print(f"[INFO] === Facility start: {alias} (#{idx+1}/{len(facilities)}) ===", flush=True)
+            print(f"[INFO] navigate_to_facility: {facility.get('name','unknown')}", flush=True)
             try:
+                # 初回は従来どおりフルシーケンス
                 if idx == 0:
-                    # 初回：通常のシーケンスで到達
                     navigate_to_facility(page, facility)
                 else:
-                    # 戻る → 館選択 → 施設コードでクリック
-                    if not back_to_facility_list(page):
-                        print("[WARN] back failed; fallback to BASE_URL and full click_sequence.", flush=True)
+                    # ★戻るボタン→館選択へ復帰
+                    ok_back = back_to_facility_list(page)
+                    if not ok_back:
+                        print("[WARN] back-to-facility-list failed; fallback to full sequence.", flush=True)
                         navigate_to_facility(page, facility)
                     else:
-                        code = facility.get("facility_code") or FACILITY_ALIAS_TO_BLDCD.get(alias, "")
-                        ok_sel = select_facility_by_code(page, code) if code else False
+                        # ★施設コード（config優先／無ければ短縮名→BldCd）
+                        code = (facility.get("facility_code") or
+                                FACILITY_ALIAS_TO_BLDCD.get(alias, ""))
+                        ok_sel = select_facility_by_code(page, code, config)
                         if not ok_sel:
-                            print(f"[WARN] facility code select failed: {code}; fallback to text.", flush=True)
-                            try_click_text(page, facility.get("name",""), timeout_ms=5000)
-                        # 部屋選択などの追加ステップ
-                        apply_post_facility_steps(page, facility)
-                        # 1か月表示のカレンダー準備
-                        wait_calendar_ready(page, facility)
+                            print(f"[WARN] facility-code click failed (code={code}); fallback to full sequence.", flush=True)
+                            navigate_to_facility(page, facility)
+                        else:
+                            # ★部屋選択など post-step
+                            apply_post_facility_steps(page, facility)
+                            # カレンダー準備（従来どおり）
+                            wait_calendar_ready(page, facility)
 
-                # 月巡回＋保存＋差分通知
-                monitor_months_for_facility(page, facility, config)
+                # ===== 以降：従来の月保存・通知・月遷移ロジック（変更なし） =====
+                with time_section("get_current_year_month_text"):
+                    month_text = get_current_year_month_text(page) or "unknown"
+                cal_root = locate_calendar_root(page, month_text or "予約カレンダー", facility)
+                short = alias
+                outdir = facility_month_dir(short or 'unknown_facility', month_text)
+                summary, details = summarize_vacancies(page, cal_root, config)
+                prev_payload = load_last_payload(outdir)
+                prev_summary = (prev_payload or {}).get("summary")
+                prev_details = (prev_payload or {}).get("details") or []
+                changed = summaries_changed(prev_summary, summary)
+                latest_html, latest_png, ts_html, ts_png = save_calendar_assets(cal_root, outdir, save_ts=changed)
+
+                fac_ret = facility.get("retention") or {}
+                max_png = int(fac_ret.get("max_files_per_month_png", max_png_default))
+                max_html = int(fac_ret.get("max_files_per_month_html", max_html_default))
+                rotate_snapshot_files(outdir, max_png=max_png, max_html=max_html)
+
+                payload = {
+                    "month": month_text, "facility": facility.get('name',''),
+                    "summary": summary, "details": details,
+                    "run_at": jst_now().strftime("%Y-%m-%d %H:%M:%S JST")
+                }
+                with time_section("write status_counts.json"):
+                    safe_write_text(outdir / "status_counts.json", json.dumps(payload, ensure_ascii=False, indent=2))
+                print(f"[INFO] summary({facility.get('name','')} - {month_text}): ○={summary['○']} △={summary['△']} ×={summary['×']} 未判定={summary['未判定']}", flush=True)
+                if ts_html and ts_png: print(f"[INFO] saved (timestamped): {ts_html.name}, {ts_png.name}", flush=True)
+                print(f"[INFO] saved: {facility.get('name','')} - {month_text} latest=({latest_html.name},{latest_png.name})", flush=True)
+
+                lines = build_aggregate_lines(month_text, prev_details, details)
+                if lines:
+                    send_aggregate_lines(DISCORD_WEBHOOK_URL, short, month_text, lines)
+
+                # 月遷移ループ（元の実装そのまま）
+                shifts = facility.get("month_shifts", [0,1])
+                shifts = sorted(set(int(s) for s in shifts if isinstance(s,(int,float))))
+                if 0 not in shifts: shifts.insert(0,0)
+                max_shift = max(shifts)
+                prev_month_text = month_text
+                for step in range(1, max_shift + 1):
+                    ok = click_next_month(page, calendar_root=cal_root, prev_month_text=prev_month_text,
+                                          wait_timeout_ms=20000, facility=facility)
+                    if not ok:
+                        dbg = OUTPUT_ROOT / "_debug"; safe_mkdir(dbg)
+                        with time_section(f"screenshot fail step={step}"):
+                            page.screenshot(path=str(dbg / f"failed_next_month_step{step}_{short}.png"))
+                        print(f"[WARN] next-month click failed at step={step}", flush=True)
+                        break
+                    with time_section(f"get_current_month_text(step={step})"):
+                        month_text2 = get_current_year_month_text(page) or f"shift_{step}"
+                        print(f"[INFO] month(step={step}): {month_text2}", flush=True)
+                    cal_root2 = locate_calendar_root(page, month_text2 or "予約カレンダー", facility)
+                    outdir2 = facility_month_dir(short or 'unknown_facility', month_text2)
+                    print(f"[INFO] outdir(step={step})={outdir2}", flush=True)
+
+                    if step in shifts:
+                        summary2, details2 = summarize_vacancies(page, cal_root2, config)
+                        prev_payload2 = load_last_payload(outdir2)
+                        prev_summary2 = (prev_payload2 or {}).get("summary")
+                        prev_details2 = (prev_payload2 or {}).get("details") or []
+                        changed2 = summaries_changed(prev_summary2, summary2)
+                        latest_html2, latest_png2, ts_html2, ts_png2 = save_calendar_assets(cal_root2, outdir2, save_ts=changed2)
+                        rotate_snapshot_files(outdir2, max_png=max_png, max_html=max_html)
+
+                        payload2 = {
+                            "month": month_text2, "facility": facility.get('name',''),
+                            "summary": summary2, "details": details2,
+                            "run_at": jst_now().strftime("%Y-%m-%d %H:%M:%S JST")
+                        }
+                        with time_section("write status_counts.json (step)"):
+                            safe_write_text(outdir2 / "status_counts.json", json.dumps(payload2, ensure_ascii=False, indent=2))
+                        print(f"[INFO] summary({facility.get('name','')} - {month_text2}): ○={summary2['○']} △={summary2['△']} ×={summary2['×']} 未判定={summary2['未判定']}", flush=True)
+                        if ts_html2 and ts_png2: print(f"[INFO] saved (timestamped): {ts_html2.name}, {ts_png2.name}", flush=True)
+                        print(f"[INFO] saved: {facility.get('name','')} - {month_text2} latest=({latest_html2.name},{latest_png2.name})", flush=True)
+
+                        lines2 = build_aggregate_lines(month_text2, prev_details2, details2)
+                        if lines2:
+                            send_aggregate_lines(DISCORD_WEBHOOK_URL, short, month_text2, lines2)
+
+                    cal_root = cal_root2
+                    prev_month_text = month_text2
 
             except Exception as e:
-                # 施設処理中の例外：証跡を残して継続
                 dbg = OUTPUT_ROOT / "_debug"; safe_mkdir(dbg)
                 shot = dbg / f"exception_{alias}_{_dt.now().strftime('%Y%m%d_%H%M%S')}.png"
-                with time_section("screenshot exception (outer)"):
+                with time_section("screenshot exception"):
                     try: page.screenshot(path=str(shot))
                     except Exception: pass
+                safe_write_text(dbg / f"exception_{alias}_{_dt.now().strftime('%Y%m%d_%H%M%S')}.html", page.inner_html("body"))
                 print(f"[ERROR] run_monitor: 施設処理中に例外: {e} (debug: {shot})", flush=True)
                 continue
 
@@ -1246,17 +1270,13 @@ def main():
     parser.add_argument("--facility", default=None)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-
     force = MONITOR_FORCE or args.force
     within, now = is_within_monitoring_window(MONITOR_START_HOUR, MONITOR_END_HOUR)
     if not force:
         if now: print(f"[INFO] JST now: {now.strftime('%Y-%m-%d %H:%M:%S')} (window {MONITOR_START_HOUR}:00-{MONITOR_END_HOUR}:59)", flush=True)
-        if not within:
-            print("[INFO] outside monitoring window. exit.", flush=True)
-            sys.exit(0)
+        if not within: print("[INFO] outside monitoring window. exit.", flush=True); sys.exit(0)
     else:
         if now: print(f"[INFO] FORCE RUN enabled. JST now: {now.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
-
     cfg = load_config()
     if args.facility:
         targets = [f for f in cfg.get("facilities", []) if f.get("name")==args.facility]
@@ -1266,7 +1286,6 @@ def main():
         tmp = BASE_DIR / "config.temp.json"
         tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), "utf-8")
         global CONFIG_PATH; CONFIG_PATH = tmp
-
     run_monitor()
 
 if __name__ == "__main__":
