@@ -913,12 +913,12 @@ class DiscordWebhookClient:
             
     def send_text(self, content: str) -> bool:
 
-    # メンション付与は呼び出し側に一元化するため、ここでは付けない
-    # allowed_mentions は従来通り適用する
-    _, allowed = _build_mention_and_allowed()
+        # メンション付与は呼び出し側に一元化するため、ここでは付けない
+        # allowed_mentions は従来通り適用する
+        _, allowed = _build_mention_and_allowed()
 
-    pages = _split_content(content or "", limit=DISCORD_CONTENT_LIMIT)
-    ok_all = True
+        pages = _split_content(content or "", limit=DISCORD_CONTENT_LIMIT)
+        ok_all = True
 
         for i, page in enumerate(pages, 1):
             payload = {"content": page, **allowed}
