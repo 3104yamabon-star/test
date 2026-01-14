@@ -1,8 +1,23 @@
 
 {
+  "selectors": {
+    "back_from_month_selector": "a[href*='gRsvWInstSrchMonthVacantBackAction']",
+    "month_table_selector": "table.m_akitablelist",
+    "facility_list_selector": "table.tcontent a[href*='gRsvWTransInstSrchInstAction']",
+    "facility_link_by_code_template": "table.tcontent a[href*=\"gRsvWTransInstSrchInstAction\"][href*=\"'{code}'\"]",
+    "next_month_selector_candidates": [
+      "a[href*='moveCalender'][href*='gRsvWInstSrchMonthVacantAction']",
+      "a:has-text('次の月')",
+      "a:has-text('翌月')"
+    ]
+  },
+
   "facilities": [
     {
       "name": "南浦和コミュニティセンター",
+      "alias": "南浦和",
+      "facility_code": "5140",
+      "month_shifts": [0, 1, 2, 3],
       "click_sequence": [
         "施設の空き状況",
         "利用目的から",
@@ -10,11 +25,21 @@
         "バドミントン",
         "南浦和コミュニティセンター"
       ],
-      "month_shifts": [0, 1, 2, 3],
-      "calendar_selector": "table.reservation-calendar"
+      "post_facility_click_steps": [],
+      "calendar_selector": "table.m_akitablelist",
+      "step_hints": {
+        "施設の空き状況": ".tcontent",
+        "利用目的から": ".tcontent",
+        "屋内スポーツ": ".tcontent",
+        "バドミントン": ".tcontent",
+        "南浦和コミュニティセンター": ".tcontent"
+      }
     },
     {
       "name": "岩槻南部公民館",
+      "alias": "岩槻",
+      "facility_code": "1570",
+      "month_shifts": [0, 1, 2, 3],
       "click_sequence": [
         "施設の空き状況",
         "利用目的から",
@@ -22,11 +47,21 @@
         "バドミントン",
         "岩槻南部公民館"
       ],
-      "month_shifts": [0, 1, 2, 3],
-      "calendar_selector": "table.reservation-calendar"
+      "post_facility_click_steps": [],
+      "calendar_selector": "table.m_akitablelist",
+      "step_hints": {
+        "施設の空き状況": ".tcontent",
+        "利用目的から": ".tcontent",
+        "屋内スポーツ": ".tcontent",
+        "バドミントン": ".tcontent",
+        "岩槻南部公民館": ".tcontent"
+      }
     },
     {
       "name": "岸町公民館",
+      "alias": "岸町",
+      "facility_code": "1300",
+      "month_shifts": [0, 1],
       "click_sequence": [
         "施設の空き状況",
         "利用目的から",
@@ -34,70 +69,97 @@
         "バドミントン",
         "岸町公民館"
       ],
-      "month_shifts": [0, 1],
-      "calendar_selector": "table.reservation-calendar"
-    },
-    {
-      "name": "鈴谷公民館",
-      "click_sequence": [
-        "施設の空き状況",
-        "利用目的から",
-        "屋内スポーツ",
-        "バドミントン",
-        "鈴谷公民館",
-        "すべて"
-      ],
-      "month_shifts": [0, 1],
-      "calendar_selector": "table.reservation-calendar"
-    },
-    
-    {
-      "name": "浦和駒場体育館",
-      "click_sequence": [
-        "施設の空き状況",
-        "利用目的から",
-        "屋内スポーツ",
-        "バドミントン",
-        "浦和駒場体育館",
-        "浦和駒場体育館第２体育室"
-      ],
-      "month_shifts": [0, 1, 2, 3],
-      "calendar_selector": "table.reservation-calendar",
-    
-      "special_selectors": {
-        "浦和駒場体育館第２体育室": [
-          "a[href^='javascript:sendInstNo'][href*=\"'2')\"]:has-text('第２体育室')",
-          "a[href^='javascript:sendInstNo'][href*=\"'2')\"]:has-text('第2体育室')"
-        ]
-      },
-      "special_pre_actions": {
-        "浦和駒場体育館第２体育室": [
-          "SCROLL:0,600"
-        ]
-      },
-    
+      "post_facility_click_steps": [],
+      "calendar_selector": "table.m_akitablelist",
       "step_hints": {
         "施設の空き状況": ".tcontent",
         "利用目的から": ".tcontent",
         "屋内スポーツ": ".tcontent",
         "バドミントン": ".tcontent",
-        "浦和駒場体育館": ".tcontent"
+        "岸町公民館": ".tcontent"
+      }
+    },
+    {
+      "name": "鈴谷公民館",
+      "alias": "鈴谷",
+      "facility_code": "1200",
+      "month_shifts": [0, 1],
+      "click_sequence": [
+        "施設の空き状況",
+        "利用目的から",
+        "屋内スポーツ",
+        "バドミントン",
+        "鈴谷公民館"
+      ],
+      "post_facility_click_steps": ["すべて"],
+      "calendar_selector": "table.m_akitablelist",
+      "special_selectors": {
+        "すべて": [
+          "a:has-text('すべて')",
+          "button:has-text('すべて')"
+        ]
+      },
+      "special_pre_actions": {
+        "すべて": ["SCROLL:0,600"]
+      },
+      "step_hints": {
+        "施設の空き状況": ".tcontent",
+        "利用目的から": ".tcontent",
+        "屋内スポーツ": ".tcontent",
+        "バドミントン": ".tcontent",
+        "鈴谷公民館": ".tcontent",
+        "すべて": ".tcontent"
+      }
+    },
+    {
+      "name": "浦和駒場体育館",
+      "alias": "浦和駒場",
+      "facility_code": "3000",
+      "month_shifts": [0, 1, 2, 3],
+      "click_sequence": [
+        "施設の空き状況",
+        "利用目的から",
+        "屋内スポーツ",
+        "バドミントン",
+        "浦和駒場体育館"
+      ],
+      "post_facility_click_steps": ["浦和駒場第２体育室"],
+      "calendar_selector": "table.m_akitablelist",
+      "special_selectors": {
+        "浦和駒場第２体育室": [
+          "a[href^='javascript:sendInstNo']:has-text('第２体育室')",
+          "a:has-text('浦和駒場第２体育室')"
+        ]
+      },
+      "special_pre_actions": {
+        "浦和駒場第２体育室": ["SCROLL:0,600"]
+      },
+      "step_hints": {
+        "施設の空き状況": ".tcontent",
+        "利用目的から": ".tcontent",
+        "屋内スポーツ": ".tcontent",
+        "バドミントン": ".tcontent",
+        "浦和駒場体育館": ".tcontent",
+        "浦和駒場第２体育室": ".tcontent"
       }
     }
-
   ],
-  "next_month_label": "次の月",
-  "calendar_root_hint": "空き状況",
+
   "status_patterns": {
     "circle": ["全て空き"],
     "triangle": ["一部空き"],
-    "cross": ["予約あり"]
+    "cross": ["予約あり"],
+    "holiday": ["休館日"],
+    "maintenance": ["保守日"],
+    "outside": ["受付期間外"]
   },
+
   "css_class_patterns": {
     "circle": ["status-ok", "ok", "vacant", "maru", "available", "is-available", "icon-ok"],
     "triangle": ["status-partial", "partial", "few", "warning", "limited", "icon-partial"],
     "cross": ["status-ng", "full", "unavailable", "batsu", "is-full", "icon-ng"]
   },
+
   "debug": {
     "dump_calendar_html": true,
     "log_top_samples": 15,
