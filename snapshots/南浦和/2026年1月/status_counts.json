@@ -2,10 +2,10 @@
   "month": "2026年1月",
   "facility": "南浦和コミュニティセンター",
   "summary": {
-    "○": 2,
-    "△": 0,
-    "×": 0,
-    "未判定": 29
+    "○": 0,
+    "△": 2,
+    "×": 15,
+    "未判定": 14
   },
   "details": [
     {
@@ -75,82 +75,82 @@
     },
     {
       "day": "14日",
-      "status": "○",
+      "status": "△",
       "text": "14日"
     },
     {
       "day": "15日",
-      "status": "未判定",
+      "status": "×",
       "text": "15日"
     },
     {
       "day": "16日",
-      "status": "○",
+      "status": "△",
       "text": "16日"
     },
     {
       "day": "17日",
-      "status": "未判定",
+      "status": "×",
       "text": "17日"
     },
     {
       "day": "18日",
-      "status": "未判定",
+      "status": "×",
       "text": "18日"
     },
     {
       "day": "19日",
-      "status": "未判定",
+      "status": "×",
       "text": "19日"
     },
     {
       "day": "20日",
-      "status": "未判定",
+      "status": "×",
       "text": "20日"
     },
     {
       "day": "21日",
-      "status": "未判定",
+      "status": "×",
       "text": "21日"
     },
     {
       "day": "22日",
-      "status": "未判定",
+      "status": "×",
       "text": "22日"
     },
     {
       "day": "23日",
-      "status": "未判定",
+      "status": "×",
       "text": "23日"
     },
     {
       "day": "24日",
-      "status": "未判定",
+      "status": "×",
       "text": "24日"
     },
     {
       "day": "25日",
-      "status": "未判定",
+      "status": "×",
       "text": "25日"
     },
     {
       "day": "26日",
-      "status": "未判定",
+      "status": "×",
       "text": "26日"
     },
     {
       "day": "27日",
-      "status": "未判定",
+      "status": "×",
       "text": "27日"
     },
     {
       "day": "28日",
-      "status": "未判定",
+      "status": "×",
       "text": "28日"
     },
     {
       "day": "29日",
-      "status": "未判定",
+      "status": "×",
       "text": "29日"
     },
     {
@@ -160,9 +160,9 @@
     },
     {
       "day": "31日",
-      "status": "未判定",
+      "status": "×",
       "text": "31日"
     }
   ],
-  "run_at": "2026-01-14 10:14:57 JST"
+  "run_at": "2026-01-14 10:32:13 JST"
 }
