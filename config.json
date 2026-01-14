@@ -10,112 +10,35 @@
         "バドミントン",
         "南浦和コミュニティセンター"
       ],
-      "month_shifts": [0, 1, 2, 3],
-      "calendar_selector": "table.reservation-calendar"
+      "month_shifts": [1, 2, 3]
     },
     {
       "name": "岩槻南部公民館",
-      "click_sequence": [
-        "施設の空き状況",
-        "利用目的から",
-        "屋内スポーツ",
-        "バドミントン",
-        "岩槻南部公民館"
-      ],
-      "month_shifts": [0, 1, 2, 3],
-      "calendar_selector": "table.reservation-calendar"
+      "click_sequence": ["岩槻南部公民館"],
+      "month_shifts": [1, 2, 3]
     },
     {
       "name": "岸町公民館",
-      "click_sequence": [
-        "施設の空き状況",
-        "利用目的から",
-        "屋内スポーツ",
-        "バドミントン",
-        "岸町公民館"
-      ],
-      "month_shifts": [0, 1],
-      "calendar_selector": "table.reservation-calendar"
+      "click_sequence": ["岸町公民館"],
+      "month_shifts": [1]
     },
     {
       "name": "鈴谷公民館",
-      "click_sequence": [
-        "施設の空き状況",
-        "利用目的から",
-        "屋内スポーツ",
-        "バドミントン",
-        "鈴谷公民館",
-        "すべて"
-      ],
-      "month_shifts": [0, 1],
-      "calendar_selector": "table.reservation-calendar"
+      "click_sequence": ["鈴谷公民館", "すべて"],
+      "month_shifts": [1]
     },
     {
       "name": "浦和駒場体育館",
-      "click_sequence": [
-        "施設の空き状況",
-        "利用目的から",
-        "屋内スポーツ",
-        "バドミントン",
-        "浦和駒場体育館",
-        "浦和駒場体育館第２体育室"
-      ],
-      "month_shifts": [0, 1, 2, 3],
-      "calendar_selector": "table.reservation-calendar",
-      "special_selectors": {
-        "浦和駒場体育館第２体育室": [
-          "a[href^='javascript:sendInstNo'][href*=\"'2')\"]:has-text('第２体育室')",
-          "a[href^='javascript:sendInstNo'][href*=\"'2')\"]:has-text('第2体育室')"
-        ]
-      },
-      "special_pre_actions": {
-        "浦和駒場体育館第２体育室": [
-          "SCROLL:0,600"
-        ]
-      },
-      "step_hints": {
-        "施設の空き状況": ".tcontent",
-        "利用目的から": ".tcontent",
-        "屋内スポーツ": ".tcontent",
-        "バドミントン": ".tcontent",
-        "浦和駒場体育館": ".tcontent"
-      }
+      "click_sequence": ["浦和駒場体育館", "第２体育室"],
+      "month_shifts": [1, 2, 3]
     }
   ],
-
-  "next_month_label": "次の月",
-  "calendar_root_hint": "空き状況",
-
-  "status_patterns": {
-    "circle": ["全て空き"],
-    "triangle": ["一部空き"],
-    "cross": ["予約あり"]
-  },
-
-  "css_class_patterns": {
-    "circle": ["status-ok", "ok", "vacant", "maru", "available", "is-available", "icon-ok"],
-    "triangle": ["status-partial", "partial", "few", "warning", "limited", "icon-partial"],
-    "cross": ["status-ng", "full", "unavailable", "batsu", "is-full", "icon-ng"]
-  },
-
-  "retention": {
-    "max_files_per_month_png": 50,
-    "max_files_per_month_html": 50
-  },
-
   "detail_view": {
     "common": {
       "week_table_selector": "table.akitablelist",
-      "date_header_selector": "table.akitablelist > tbody > tr:nth-child(2) > th.akitablelist",
-      "row_label_selector": "table.akitablelist > tbody > tr:nth-child(n+3) > th.akitablelist2",
-      "row_cells_selector": "table.akitablelist > tbody > tr:nth-child(n+3) > td.akitablelist",
-
-      "legend_available_alts": ["空き"],
-      "legend_full_alts": ["予約あり"],
-      "legend_available_src_contains": ["lw_emptybs.gif", "lw_0.gif"],
-      "legend_full_src_contains": ["lw_finishs.gif", "lw_100.gif"]
+      "date_header_selector": "table.akitablelist thead tr:nth-child(2) th.akitablelist",
+      "row_label_selector":  "table.akitablelist tbody tr:nth-child(n+3) th.akitablelist"
     },
-
     "南浦和コミュニティセンター": {
       "timeband_map": {
         "午前": ["09:00-12:00"],
@@ -123,7 +46,24 @@
         "夜間": ["18:00-21:00"]
       }
     },
-
+    "岩槻南部公民館": {
+      "timeband_map": {
+        "午前1": ["09:00-11:00"],
+        "午前2": ["11:00-13:00"],
+        "午後1": ["13:00-15:00"],
+        "午後2": ["15:00-17:00"],
+        "夜間1": ["17:00-19:00"],
+        "夜間2": ["19:00-21:00"]
+      }
+    },
+    "岸町公民館": {
+      "timeband_map": {
+        "午前":  ["09:00-12:00"],
+        "午後1": ["13:00-15:00"],
+        "午後2": ["15:00-17:00"],
+        "夜間":  ["18:00-21:00"]
+      }
+    },
     "鈴谷公民館": {
       "timeband_map": {
         "午前": ["09:00-12:00"],
@@ -131,52 +71,35 @@
         "夜間": ["18:00-21:00"]
       }
     },
-
-    "岸町公民館": {
-      "timeband_map": {
-        "午前": ["09:00-12:00"],
-        "午後1": ["13:00-15:00"], "午後１": ["13:00-15:00"],
-        "午後2": ["15:00-17:00"], "午後２": ["15:00-17:00"],
-        "夜間": ["18:00-21:00"]
-      }
-    },
-
-    "岩槻南部公民館": {
-      "timeband_map": {
-        "午前1": ["09:00-11:00"], "午前１": ["09:00-11:00"],
-        "午前2": ["11:00-13:00"], "午前２": ["11:00-13:00"],
-        "午後1": ["13:00-15:00"], "午後１": ["13:00-15:00"],
-        "午後2": ["15:00-17:00"], "午後２": ["15:00-17:00"],
-        "夜間1": ["17:00-19:00"], "夜間１": ["17:00-19:00"],
-        "夜間2": ["19:00-21:00"], "夜間２": ["19:00-21:00"]
-      },
-      "monthly": {
-        "calendar_selector": "table.m_akitablelist",
-        "month_label_selector": "table.m_akitablelist > tbody > tr.m_akitablelist > td strong",
-        "day_cell_selector": "table.m_akitablelist > tbody > tr > td",
-        "day_link_contains": "selectDay(",
-        "alt_partial": ["一部空き"],
-        "alt_full": ["予約あり"],
-        "alt_all": ["全て空き"]
-      }
-    },
-
     "浦和駒場体育館": {
       "timeband_map": {
-        "９～": ["09:00-11:00"], "9～": ["09:00-11:00"],
-        "１１～": ["11:00-13:00"], "11～": ["11:00-13:00"],
-        "１３～": ["13:00-15:00"], "13～": ["13:00-15:00"],
-        "１５～": ["15:00-17:00"], "15～": ["15:00-17:00"],
-        "１７～": ["17:00-19:00"], "17～": ["17:00-19:00"],
-        "１９～": ["19:00-21:00"], "19～": ["19:00-21:00"]
+        "９～":  ["09:00-11:00"],
+        "１１～": ["11:00-13:00"],
+        "１３～": ["13:00-15:00"],
+        "１５～": ["15:00-17:00"],
+        "１７～": ["17:00-19:00"],
+        "１９～": ["19:00-21:00"],
+        "9～":    ["09:00-11:00"],
+        "11～":   ["11:00-13:00"],
+        "13～":   ["13:00-15:00"],
+        "15～":   ["15:00-17:00"],
+        "17～":   ["17:00-19:00"],
+        "19～":   ["19:00-21:00"]
       }
     }
   },
-
-  "debug": {
-    "dump_calendar_html": true,
-    "log_top_samples": 15,
-    "highlight_alpha": 160,
-    "highlight_border_width": 3
+  "retention": {
+    "max_files_per_month_png": 50,
+    "max_files_per_month_html": 50
+  },
+  "status_patterns": {
+    "circle": ["○","〇","空き","available","open"],
+    "triangle": ["△","少","limited"],
+    "cross": ["×","満","full","closed"]
+  },
+  "css_class_patterns": {
+    "circle": ["akivacant","available","open"],
+    "triangle": ["akilimited","limited"],
+    "cross": ["akifull","full","closed"]
   }
 }
