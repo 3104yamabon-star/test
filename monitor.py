@@ -1010,39 +1010,66 @@ def send_aggregate_lines(webhook_url: Optional[str], facility_alias: str, month_
     client.send_embed(title=title, description=description, color=color_int, footer_text="Facility monitor")
 
 # ====== ★追加：戻るボタン／館選択／部屋選択 ======
+
 def back_to_facility_list(page) -> bool:
     """
-    1か月表示 → 館選択へ戻る（右上「もどる」：gRsvWInstSrchMonthVacantBackAction）
-    成功：True／失敗：False（_debug にスクショ・HTMLダンプ保存）
+    1か月表示 → 『もどる』（gRsvWInstSrchMonthVacantBackAction）
+    戻り先が２パターンあるためハンドリングする：
+      A) 館選択（建物一覧） … sendBldCd のリンク群が現れる
+      B) 施設選択（インスタンス一覧） … sendInstNo のリンク群が現れる（鈴谷など）
+         → さらに右上の『もどる』（gRsvWTransInstSrchBuildPageMoveAction）で館選択へ戻す
     """
-    back_sel = "a[href*='gRsvWInstSrchMonthVacantBackAction']"
-    with time_section("click back (month -> facility-list)"):
+    # まず、月表示の『もどる』を押す
+    back_sel_month = "a[href*='gRsvWInstSrchMonthVacantBackAction']"
+    try:
+        el = page.locator(back_sel_month).first
+        if not el or el.count() == 0:
+            print("[WARN] back_to_facility_list: back button NOT FOUND.", flush=True)
+            dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(dbg / f"back_button_not_found_{int(time.time())}.png"))
+            safe_write_text(dbg / f"back_button_not_found_{int(time.time())}.html", page.inner_html("body"))
+            return False
+        el.scroll_into_view_if_needed()
+        el.click(timeout=3000)
+    except Exception as e:
+        print(f"[WARN] back_to_facility_list: click failed: {e}", flush=True)
+        dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(dbg / f"back_click_failed_{int(time.time())}.png"))
+        safe_write_text(dbg / f"back_click_failed_{int(time.time())}.html", page.inner_html("body"))
+        return False
+
+    # A) 館選択（建物一覧）に戻れたか？
+    try:
+        page.wait_for_selector("table.tcontent a[href*='gRsvWTransInstSrchInstAction']", timeout=1200)
+        return True
+    except Exception:
+        pass
+
+    # B) 施設選択（インスタンス一覧）に戻った可能性（sendInstNo リンクを検出）
+    try:
+        page.wait_for_selector("table.tcontent a[href^='javascript:sendInstNo']", timeout=1200)
+        # 施設選択の右上『もどる』（館選択へ戻る）をクリック
+        back_sel_build = "a[href*='gRsvWTransInstSrchBuildPageMoveAction']"
         try:
-            el = page.locator(back_sel).first
-            if not el or el.count() == 0:
-                print("[WARN] back_to_facility_list: back button NOT FOUND.", flush=True)
-                dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
-                page.screenshot(path=str(dbg / f"back_button_not_found_{int(time.time())}.png"))
-                safe_write_text(dbg / f"back_button_not_found_{int(time.time())}.html", page.inner_html("body"))
-                return False
-            el.scroll_into_view_if_needed()
-            el.click(timeout=3000)
+            el2 = page.locator(back_sel_build).first
+            if el2 and el2.count() > 0:
+                el2.scroll_into_view_if_needed()
+                el2.click(timeout=3000)
+                # 館選択のリンク群が出るまで待機
+                page.wait_for_selector("table.tcontent a[href*='gRsvWTransInstSrchInstAction']", timeout=2000)
+                return True
         except Exception as e:
-            print(f"[WARN] back_to_facility_list: click failed: {e}", flush=True)
-            dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
-            page.screenshot(path=str(dbg / f"back_click_failed_{int(time.time())}.png"))
-            safe_write_text(dbg / f"back_click_failed_{int(time.time())}.html", page.inner_html("body"))
-            return False
-    with time_section("wait facility-list ready"):
-        try:
-            page.wait_for_selector("table.tcontent a[href*='gRsvWTransInstSrchInstAction']", timeout=3000)
-            return True
-        except Exception:
-            print("[WARN] back_to_facility_list: facility list not appeared after back.", flush=True)
-            dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
-            page.screenshot(path=str(dbg / f"facility_list_not_appeared_{int(time.time())}.png"))
-            safe_write_text(dbg / f"facility_list_not_appeared_{int(time.time())}.html", page.inner_html("body"))
-            return False
+            print(f"[WARN] back_to_facility_list: second back to Build failed: {e}", flush=True)
+    except Exception:
+        pass
+
+    # いずれでもなければ失敗証跡
+    print("[WARN] back_to_facility_list: facility list not appeared after back.", flush=True)
+    dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(dbg / f"facility_list_not_appeared_{int(time.time())}.png"))
+    safe_write_text(dbg / f"facility_list_not_appeared_{int(time.time())}.html", page.inner_html("body"))
+    return False
+
 
 def select_facility_by_code(page, code: str, cfg: Dict[str, Any]) -> bool:
     """
