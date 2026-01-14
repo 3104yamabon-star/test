@@ -450,7 +450,7 @@ def locate_calendar_root(page, hint: str, facility: Dict[str, Any] = None):
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
 
-# ====== ★月移動（従来のコードそのまま） ======
+# ====== ★月移動（従来のコードそのまま＋ガード） ======
 def _compute_next_month_text(prev: str) -> str:
     try:
         m = re.match(r"(\d{4})年(\d{1,2})月", prev or "")
@@ -1115,7 +1115,7 @@ def apply_post_facility_steps(page, facility: Dict[str, Any]) -> None:
             except Exception as e:
                 print(f"[WARN] apply_post_facility_steps: error on '{label}': {e}", flush=True)
 
-# ====== ★ここから：時間帯抽出のための追加関数 ======
+# ====== ★ここから：時間帯抽出のための追加関数（ヘッダ検出強化） ======
 def _normalize_time_label(s: str) -> str:
     """ 全角→半角、空白除去など軽い正規化 """
     if s is None:
@@ -1143,85 +1143,94 @@ def _detect_status_in_cell(cell, config) -> Optional[str]:
             src = img.get_attribute("src") or ""
             alt_n = alt.strip()
             if alt_n:
-                # 時間帯表示は "空き" / "予約あり" / その他（休館日/時間外など）
-                if "空き" in alt_n:
-                    return "空き"
-                if "予約あり" in alt_n:
-                    return "予約あり"
-            # alt が空のときは src のファイル名で推定
-            # - lw_emptybs.gif : 空き
-            # - lw_finishs.gif : 予約あり
-            # - lw_1300.gif など : 時間外 等（空きではない）
+                if "空き" in alt_n: return "空き"
+                if "予約あり" in alt_n: return "予約あり"
             fname = os.path.basename(src).lower()
-            if "empty" in fname or "lw_0.gif" in fname:
-                return "空き"
-            if "finish" in fname or "lw_100.gif" in fname:
-                return "予約あり"
-            # その他（時間外/休館 等）は空きではない
+            if "empty" in fname or "lw_0.gif" in fname: return "空き"
+            if "finish" in fname or "lw_100.gif" in fname: return "予約あり"
             return "その他"
     except Exception:
         pass
-    # 画像が無い/読めない場合はテキストからの推定（保険）
     try:
         t = (cell.inner_text() or "").strip()
-        if "空き" in t:
-            return "空き"
-        if "予約あり" in t:
-            return "予約あり"
+        if "空き" in t: return "空き"
+        if "予約あり" in t: return "予約あり"
     except Exception:
         pass
     return None
 
-def _find_day_cell_in_month(page, calendar_root, day_int: int):
-    """ 月表示カレンダー内から '15日' のような当該日のセルを特定 """
-    day_text = f"{day_int}日"
-    candidates = calendar_root.locator(":scope tbody td, :scope [role='gridcell'], :scope .fc-daygrid-day")
-    cnt = candidates.count()
+def _header_patterns(month_text: Optional[str], day_int: int) -> List[re.Pattern]:
+    """ヘッダ表記の揺れを吸収する正規表現の一覧"""
+    pats: List[str] = []
+    m = re.search(r"(\d{4})年(\d{1,2})月", month_text or "")
+    y, mo = (None, None)
+    if m:
+        y, mo = int(m.group(1)), int(m.group(2))
+    # バリエーション
+    if mo:
+        pats += [
+            rf"\b{mo}月\s*{day_int}\s*日\b",
+            rf"\b{str(mo).zfill(2)}月\s*{str(day_int).zfill(2)}\s*日\b",
+            rf"\b{mo}\s*/\s*{day_int}\b",
+            rf"\b{str(mo).zfill(2)}\s*/\s*{str(day_int).zfill(2)}\b",
+        ]
+    pats += [
+        rf"\b{day_int}\s*日\b",               # 日だけのヘッダ
+        rf"\b{day_int}\s*\(\w\)\b",           # 例：14(水)
+        rf"\b{day_int}\b",                    # 数字のみ（安全な場面のみ）
+    ]
+    if y and mo:
+        pats += [
+            rf"\b{y}\s*/\s*{mo}\s*/\s*{day_int}\b",
+            rf"\b{y}年\s*{mo}月\s*{day_int}日\b",
+        ]
+    # コンパイル（全角/半角・改行を許容）
+    return [re.compile(p) for p in pats]
+
+def _find_day_col_index_generic(table, day_int: int, month_text: Optional[str]) -> Optional[int]:
+    """thead/先頭行/全thを走査してヘッダ候補から列番号を特定"""
+    pats = _header_patterns(month_text, day_int)
+    # 1) thead th
+    ths = table.locator(":scope thead th.akitablelist, :scope thead th")
+    # 2) 最上段 tr の th
+    if ths.count() == 0:
+        ths = table.locator(":scope > tbody > tr:first-child > th.akitablelist, :scope > tbody > tr:first-child > th")
+    # 3) 全ての th（保険）
+    if ths.count() == 0:
+        ths = table.locator(":scope th.akitablelist, :scope th")
+    cnt = ths.count()
     for i in range(cnt):
-        el = candidates.nth(i)
-        try:
-            txt = (el.inner_text() or "")
-            if day_text in txt:
-                # a/selectDay があるならより確実
-                a = el.locator("a[href*='selectDay']").first
-                return a if a and a.count() > 0 else el
-        except Exception:
-            pass
-        try:
-            aria = el.get_attribute("aria-label") or ""
-            title = el.get_attribute("title") or ""
-            if day_text in (aria + " " + title):
-                a = el.locator("a[href*='selectDay']").first
-                return a if a and a.count() > 0 else el
-        except Exception:
-            pass
-        try:
-            imgs = el.locator("img")
-            jcnt = imgs.count()
-            for j in range(jcnt):
-                alt = imgs.nth(j).get_attribute("alt") or ""
-                tit = imgs.nth(j).get_attribute("title") or ""
-                if day_text in (alt + " " + tit):
-                    a = el.locator("a[href*='selectDay']").first
-                    return a if a and a.count() > 0 else el
-        except Exception:
-            pass
+        t = (ths.nth(i).inner_text() or "").replace("\n", "").strip()
+        for rp in pats:
+            if rp.search(t):
+                return i
     return None
 
-def _wait_timesheet_ready_for_day(page, day_int: int, timeout_ms: int = 5000) -> bool:
-    """ 時間帯表示でヘッダ '1月14日' のような見出しが現れるまで待機 """
+def _wait_timesheet_ready_for_day(page, day_int: int, month_text: Optional[str], timeout_ms: int = 7000) -> bool:
+    """時間帯表示でヘッダ（表記揺れ許容）が現れるまで待機"""
     deadline = time.time() + (timeout_ms / 1000.0)
     while time.time() < deadline:
         try:
-            ths = page.locator("table.akitablelist th.akitablelist")
-            cnt = ths.count()
-            for i in range(cnt):
-                t = (ths.nth(i).inner_text() or "").replace("\n", "")
-                if re.search(rf"\b1月\s*{day_int}\s*日\b", t):
-                    return True
+            # テーブル自体の出現
+            tbl = page.locator("table.akitablelist")
+            if tbl.count() > 0:
+                table = tbl.first
+                # ヘッダ候補を走査
+                ths = table.locator(":scope thead th.akitablelist, :scope thead th")
+                if ths.count() == 0:
+                    ths = table.locator(":scope > tbody > tr:first-child > th.akitablelist, :scope > tbody > tr:first-child > th")
+                if ths.count() == 0:
+                    ths = table.locator(":scope th.akitablelist, :scope th")
+                cnt = ths.count()
+                pats = _header_patterns(month_text, day_int)
+                for i in range(cnt):
+                    t = (ths.nth(i).inner_text() or "").replace("\n", "").strip()
+                    for rp in pats:
+                        if rp.search(t):
+                            return True
         except Exception:
             pass
-        page.wait_for_timeout(120)
+        page.wait_for_timeout(150)
     return False
 
 def _click_back_to_month(page) -> bool:
@@ -1257,7 +1266,7 @@ def _click_back_to_month(page) -> bool:
         print("[STATE] month-view NOT visible (continue cautiously)", flush=True)
     return True
 
-def goto_day_and_collect_time_ranges(page, calendar_root, day_int: int, facility_alias: str, config) -> List[str]:
+def goto_day_and_collect_time_ranges(page, calendar_root, day_int: int, facility_alias: str, config, month_text: Optional[str]) -> List[str]:
     """
     対象日をクリックして時間帯レンジ（空きのみ）を収集し、月表示へ戻る
     - 時間帯表示では "空き" / "予約あり" のみを扱い、"空き" の時間帯だけ返す
@@ -1277,8 +1286,8 @@ def goto_day_and_collect_time_ranges(page, calendar_root, day_int: int, facility
         print(f"[CLICK] day={day_int}: FAILED", flush=True)
         return []
 
-    # ヘッダ '1月D日' を待つ
-    if not _wait_timesheet_ready_for_day(page, day_int, timeout_ms=5000):
+    # ヘッダ待機（表記揺れ許容）
+    if not _wait_timesheet_ready_for_day(page, day_int, month_text, timeout_ms=7000):
         print(f"[STATE] timesheet-view NOT ready for day={day_int} (header not detected) → skip", flush=True)
         _click_back_to_month(page)
         return []
@@ -1291,23 +1300,14 @@ def goto_day_and_collect_time_ranges(page, calendar_root, day_int: int, facility
             raise RuntimeError("time-table not found")
         table = tbl.first
 
-        # 列ヘッダから当該日列を特定
-        ths = table.locator(":scope thead th.akitablelist, :scope > tbody > tr:first-child > th.akitablelist")
-        if ths.count() == 0:
-            ths = table.locator(":scope tr").nth(0).locator(":scope th.akitablelist")
-        target_col = None
-        col_count = ths.count()
-        for c in range(col_count):
-            header_text = (ths.nth(c).inner_text() or "").replace("\n", "")
-            if re.search(rf"\b1月\s*{day_int}\s*日\b", header_text):
-                target_col = c
-                break
+        # 列ヘッダから当該日列を特定（表記揺れ許容）
+        target_col = _find_day_col_index_generic(table, day_int, month_text)
         if target_col is None:
             print(f"[STATE] timesheet-view ready but header for day={day_int} NOT found → skip", flush=True)
             _click_back_to_month(page)
             return []
 
-        print(f"[STATE] timesheet-view ready: table.akitablelist visible, header='1月{day_int}日' found (col={target_col})", flush=True)
+        print(f"[STATE] timesheet-view ready: table.akitablelist visible, header for day={day_int} found (col={target_col})", flush=True)
 
         # 各行（時間帯ラベル＝1列目）について対象列のセルを評価
         print(f"[SCAN] day={day_int}: collecting '空き' slots...", flush=True)
@@ -1337,10 +1337,6 @@ def goto_day_and_collect_time_ranges(page, calendar_root, day_int: int, facility
     return uniq
 
 def _sortkey_time_range(s: str) -> Tuple[int, int]:
-    """
-    "13～15時" -> (13, 15) のようにソートキー化
-    異常系は大きな値にして末尾へ
-    """
     m = re.match(r"(\d{1,2})\D+(\d{1,2})", s or "")
     if not m:
         return (999, 999)
@@ -1380,14 +1376,14 @@ def build_time_increase_lines(page, calendar_root, facility_alias: str, month_te
     improved_days = compute_improved_days(prev_details, cur_details)
     lines: List[str] = []
     for di in improved_days:
-        ranges = goto_day_and_collect_time_ranges(page, calendar_root, di, facility_alias, config)
+        ranges = goto_day_and_collect_time_ranges(page, calendar_root, di, facility_alias, config, month_text)
         if not ranges:
             continue
         dt = datetime.date(y, mo, di)
         wd = _weekday_jp(dt)
         wd_part = f"{wd}・祝" if _is_japanese_holiday(dt) else wd
         line = f"{y}年{mo}月{di}日 ({wd_part}) : " + "、".join(ranges)
-        print(f"[RESULT] {line}", flush=True)  # ★ 生成した通知行をログ化
+        print(f"[RESULT] {line}", flush=True)  # 生成した通知行をログ化
         lines.append(line)
     return lines
 
@@ -1471,7 +1467,7 @@ def run_monitor():
                 if ts_html and ts_png:
                     print(f"[INFO] saved (timestamped): {ts_html.name}, {ts_png.name}", flush=True)
 
-                # ★（1～5）改善日が尽きるまで：クリック→時間帯「空き」検出→月に戻る（build_*が内部でループ）
+                # ★（1～5）改善日が尽きるまで：クリック→時間帯「空き」検出→月に戻る
                 time_lines = build_time_increase_lines(page, cal_root, short, month_text, prev_details, details, config)
                 if time_lines:
                     send_aggregate_lines(DISCORD_WEBHOOK_URL, short, month_text, time_lines)
