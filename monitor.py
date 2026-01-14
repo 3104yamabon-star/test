@@ -1011,32 +1011,53 @@ def send_aggregate_lines(webhook_url: Optional[str], facility_alias: str, month_
 
 # ====== ★追加：戻るボタン／館選択／部屋選択 ======
 
+
 def back_to_facility_list(page) -> bool:
-    """
-    1か月表示 → 『もどる』（gRsvWInstSrchMonthVacantBackAction）
-    戻り先が２パターンあるためハンドリングする：
-      A) 館選択（建物一覧） … sendBldCd のリンク群が現れる
-      B) 施設選択（インスタンス一覧） … sendInstNo のリンク群が現れる（鈴谷など）
-         → さらに右上の『もどる』（gRsvWTransInstSrchBuildPageMoveAction）で館選択へ戻す
-    """
-    # まず、月表示の『もどる』を押す
     back_sel_month = "a[href*='gRsvWInstSrchMonthVacantBackAction']"
-    try:
-        el = page.locator(back_sel_month).first
-        if not el or el.count() == 0:
-            print("[WARN] back_to_facility_list: back button NOT FOUND.", flush=True)
-            dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
-            page.screenshot(path=str(dbg / f"back_button_not_found_{int(time.time())}.png"))
-            safe_write_text(dbg / f"back_button_not_found_{int(time.time())}.html", page.inner_html("body"))
+    with time_section("click back (month -> facility/inst list)"):
+        try:
+            el = page.locator(back_sel_month).first
+            if not el or el.count() == 0:
+                print("[WARN] back_to_facility_list: back button NOT FOUND.", flush=True)
+                ...
+                return False
+            el.scroll_into_view_if_needed()
+            el.click(timeout=3000)
+        except Exception as e:
+            print(f"[WARN] back_to_facility_list: click failed: {e}", flush=True)
+            ...
             return False
-        el.scroll_into_view_if_needed()
-        el.click(timeout=3000)
-    except Exception as e:
-        print(f"[WARN] back_to_facility_list: click failed: {e}", flush=True)
-        dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
-        page.screenshot(path=str(dbg / f"back_click_failed_{int(time.time())}.png"))
-        safe_write_text(dbg / f"back_click_failed_{int(time.time())}.html", page.inner_html("body"))
-        return False
+
+    # A) 館選択（建物一覧）に戻れたか？
+    try:
+        page.wait_for_selector("table.tcontent a[href*='gRsvWTransInstSrchInstAction']", timeout=1200)
+        print("[INFO] back_to_facility_list: returned to BUILD list (館選択)", flush=True)
+        return True
+    except Exception:
+        pass
+
+    # B) 施設選択（インスタンス一覧）か？
+    try:
+        page.wait_for_selector("table.tcontent a[href^='javascript:sendInstNo']", timeout=1200)
+        print("[INFO] back_to_facility_list: returned to INST list (施設選択) -> pressing back to BUILD list", flush=True)
+        back_sel_build = "a[href*='gRsvWTransInstSrchBuildPageMoveAction']"
+        try:
+            el2 = page.locator(back_sel_build).first
+            if el2 and el2.count() > 0:
+                el2.scroll_into_view_if_needed()
+                el2.click(timeout=3000)
+                page.wait_for_selector("table.tcontent a[href*='gRsvWTransInstSrchInstAction']", timeout=2000)
+                print("[INFO] back_to_facility_list: now at BUILD list (館選択)", flush=True)
+                return True
+        except Exception as e:
+            print(f"[WARN] back_to_facility_list: second back to BUILD failed: {e}", flush=True)
+    except Exception:
+        pass
+
+    print("[WARN] back_to_facility_list: facility/build list not appeared after back.", flush=True)
+    ...
+    return False
+
 
     # A) 館選択（建物一覧）に戻れたか？
     try:
