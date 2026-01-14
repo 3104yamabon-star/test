@@ -911,22 +911,27 @@ class DiscordWebhookClient:
         text = f"**{title}**\n{description or ''}"
         return self.send_text(text)
 
-    def send_text(self, content: str) -> bool:
-        mention, allowed = _build_mention_and_allowed()
-        pages = _split_content(content or "", limit=DISCORD_CONTENT_LIMIT)
-        ok_all = True
-        for i, page in enumerate(pages, 1):
-            page_with_mention = f"{mention} {page}".strip() if mention else page
-            payload = {"content": page_with_mention, **allowed}
-            print("[DEBUG] payload preview:", json.dumps(payload, ensure_ascii=False), flush=True)
-            status, body, headers = self._post(payload)
-            if status in (200, 204):
-                print(f"[INFO] Discord notified (text p{i}/{len(pages)}): {len(page_with_mention)} chars body={body}", flush=True)
-            else:
-                ok_all = False
-                print(f"[ERROR] Discord text failed (p{i}/{len(pages)}): HTTP {status} body={body}", flush=True)
-        return ok_all
+        
+def send_text(self, content: str) -> bool:
+    # メンション付与は呼び出し側に一元化するため、ここでは付けない
+    # allowed_mentions は従来通り適用する
+    _, allowed = _build_mention_and_allowed()
 
+    pages = _split_content(content or "", limit=DISCORD_CONTENT_LIMIT)
+    ok_all = True
+
+    for i, page in enumerate(pages, 1):
+        payload = {"content": page, **allowed}
+        print("[DEBUG] payload preview:", json.dumps(payload, ensure_ascii=False), flush=True)
+        status, body, headers = self._post(payload)
+        if status in (200, 204):
+            print(f"[INFO] Discord notified (text p{i}/{len(pages)}): {len(page)} chars body={body}", flush=True)
+        else:
+            ok_all = False
+            print(f"[ERROR] Discord text failed (p{i}/{len(pages)}): HTTP {status} body={body}", flush=True)
+
+    return ok_all
+   
 # 施設ごとの色（通知 embed 用）
 _FACILITY_ALIAS_COLOR_HEX = {
     "南浦和": "0x3498DB",  # Blue
