@@ -1170,38 +1170,38 @@ def run_monitor():
     max_png_default = int(cfg_ret.get("max_files_per_month_png", 50))
     max_html_default = int(cfg_ret.get("max_files_per_month_html", 50))
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
-        page = context.new_page()
+    
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True)
+    context = browser.new_context()
+    page = context.new_page()
 
-        for idx, facility in enumerate(facilities):
-            alias = FACILITY_TITLE_ALIAS.get(facility.get('name',''), facility.get('name','')) or facility.get('name','')
-            print(f"[INFO] navigate_to_facility: {facility.get('name','unknown')}", flush=True)
-            try:
-                # 初回は従来どおりフルシーケンス
-                if idx == 0:
+    for idx, facility in enumerate(facilities):
+        alias = FACILITY_TITLE_ALIAS.get(facility.get('name',''), facility.get('name','')) or facility.get('name','')
+        print(f"[INFO] === Facility stage begin: {alias} (#{idx+1}/{len(facilities)}) ===", flush=True)
+        try:
+            if idx == 0:
+                print("[INFO] first facility: run full sequence", flush=True)
+                navigate_to_facility(page, facility)
+            else:
+                # ★ここから戻りフローが始まることを明示
+                print("[INFO] trying back from month-view to facility/build list ...", flush=True)
+                ok_back = back_to_facility_list(page)
+                if not ok_back:
+                    print("[WARN] back failed; fallback to full sequence", flush=True)
                     navigate_to_facility(page, facility)
                 else:
-                    # ★戻るボタン→館選択へ復帰
-                    ok_back = back_to_facility_list(page)
-                    if not ok_back:
-                        print("[WARN] back-to-facility-list failed; fallback to full sequence.", flush=True)
+                    print("[INFO] back succeeded; now selecting next facility by BldCd", flush=True)
+                    code = facility.get("facility_code") or FACILITY_ALIAS_TO_BLDCD.get(alias, "")
+                    ok_sel = select_facility_by_code(page, code, config)
+                    if not ok_sel:
+                        print(f"[WARN] BldCd click failed (code={code}); fallback to full sequence", flush=True)
                         navigate_to_facility(page, facility)
                     else:
-                        # ★施設コード（config優先／無ければ短縮名→BldCd）
-                        code = (facility.get("facility_code") or
-                                FACILITY_ALIAS_TO_BLDCD.get(alias, ""))
-                        ok_sel = select_facility_by_code(page, code, config)
-                        if not ok_sel:
-                            print(f"[WARN] facility-code click failed (code={code}); fallback to full sequence.", flush=True)
-                            navigate_to_facility(page, facility)
-                        else:
-                            # ★部屋選択など post-step
-                            apply_post_facility_steps(page, facility)
-                            # カレンダー準備（従来どおり）
-                            wait_calendar_ready(page, facility)
-
+                        print("[INFO] BldCd click succeeded; applying post-steps (if any)", flush=True)
+                        apply_post_facility_steps(page, facility)
+                        wait_calendar_ready(page, facility)
+           
                 # ===== 以降：従来の月保存・通知・月遷移ロジック（変更なし） =====
                 with time_section("get_current_year_month_text"):
                     month_text = get_current_year_month_text(page) or "unknown"
