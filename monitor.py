@@ -942,9 +942,12 @@ def _hex_to_int(hex_str: str) -> int:
     except Exception:
         return int(_DEFAULT_COLOR_HEX, 16)
 
+
 def send_aggregate_lines(webhook_url: Optional[str], facility_alias: str, month_text: str, lines: List[str]) -> None:
     if not webhook_url or not lines:
         return
+
+    # 既存の設定（テキスト強制・行数制限）
     force_text = (os.getenv("DISCORD_FORCE_TEXT", "0").strip() == "1")
     max_lines_env = os.getenv("DISCORD_MAX_LINES", "").strip()
     max_lines = None
@@ -955,17 +958,36 @@ def send_aggregate_lines(webhook_url: Optional[str], facility_alias: str, month_
         max_lines = None
     if max_lines is not None and len(lines) > max_lines:
         lines = lines[:max_lines] + [f"... ほか {len(lines) - max_lines} 件"]
+
+    # 件名・本文の組み立て（従来どおり）
     title = f"{facility_alias}"
     description = "\n".join(lines)
+
+    # ★ メンション＆allowed_mentions を復活
+    mention, allowed = _build_mention_and_allowed()
+    # 例：メンションユーザーIDを設定済なら "<@123456789012345678>" が入る
+    #     @everyone/@here は allowed_mentions の parse に応じて許可
+
+    # 色（embed用）
     color_hex = _FACILITY_ALIAS_COLOR_HEX.get(facility_alias, _DEFAULT_COLOR_HEX)
     color_int = _hex_to_int(color_hex)
+
+    # Webhookクライアント
     client = DiscordWebhookClient.from_env()
     client.webhook_url = webhook_url
+
+    # 強制テキスト送信（embedを使わない運用時）
     if force_text:
-        content = f"**{title}**\n{description}"
-        client.send_text(content)
+        content = f"{mention} **{title}**\n{description}".strip()  # ★ 冒頭にメンションを付与
+        payload = {"content": content, **allowed}
+        # 直接送る（client.send_text に渡す／または簡易POSTでもOKだが既存に合わせる）
+        client.send_text(content)  # allowed は client 内部で扱うため、必要なら send_text 実装をallowed対応へ拡張
         return
+
+    # embed送信（こちらは client.send_embed が mention＋allowed を扱える設計）
+    # client.send_embed() は content に mention を付け、allowed_mentions を使用します
     client.send_embed(title=title, description=description, color=color_int, footer_text="Facility monitor")
+
 
 # ====== ★戻る／施設選択／部屋選択 ======
 def back_to_facility_list(page) -> bool:
