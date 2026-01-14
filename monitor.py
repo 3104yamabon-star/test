@@ -63,60 +63,22 @@ FACILITY_ALIAS_TO_BLDCD = {
 
 # ====== 施設ごとの時間帯 → 時刻レンジ ======
 FACILITY_TIME_MAP = {
-    # 南浦和（午前／午後／夜間）
-    "南浦和": {
-        "午前": "9～12時",
-        "午後": "13～17時",
-        "夜間": "18～21時",
-    },
-    # 岩槻（午前1/午前2/午後1/午後2/夜間1/夜間2）
+    "南浦和": {"午前": "9～12時", "午後": "13～17時", "夜間": "18～21時"},
     "岩槻": {
-        "午前1": "9～11時",
-        "午前１": "9～11時",
-        "午前２": "11～13時",
-        "午前2": "11～13時",
-        "午後1": "13～15時",
-        "午後１": "13～15時",
-        "午後2": "15～17時",
-        "午後２": "15～17時",
-        "夜間1": "17～19時",
-        "夜間１": "17～19時",
-        "夜間2": "19～21時",
-        "夜間２": "19～21時",
+        "午前1": "9～11時", "午前１": "9～11時",
+        "午前2": "11～13時", "午前２": "11～13時",
+        "午後1": "13～15時", "午後１": "13～15時",
+        "午後2": "15～17時", "午後２": "15～17時",
+        "夜間1": "17～19時", "夜間１": "17～19時",
+        "夜間2": "19～21時", "夜間２": "19～21時",
     },
-    # 岸町（午前／午後1／午後2／夜間）
-    "岸町": {
-        "午前": "9～12時",
-        "午後1": "13～15時",
-        "午後１": "13～15時",
-        "午後2": "15～17時",
-        "午後２": "15～17時",
-        "夜間": "18～21時",
-    },
-    # 鈴谷（午前／午後1／午後2／夜間）
-    "鈴谷": {
-        "午前": "9～12時",
-        "午後1": "13～15時",
-        "午後１": "13～15時",
-        "午後2": "15～17時",
-        "午後２": "15～17時",
-        "夜間": "18～21時",
-    },
-    # 駒場（9～／11～／13～／15～／17～／19～）
-    "駒場": {
-        "9～": "9～11時",
-        "９～": "9～11時",
-        "11～": "11～13時",
-        "１１～": "11～13時",
-        "13～": "13～15時",
-        "１３～": "13～15時",
-        "15～": "15～17時",
-        "１５～": "15～17時",
-        "17～": "17～19時",
-        "１７～": "17～19時",
-        "19～": "19～21時",
-        "１９～": "19～21時",
-    },
+    "岸町": {"午前": "9～12時", "午後1": "13～15時", "午後１": "13～15時", "午後2": "15～17時", "午後２": "15～17時", "夜間": "18～21時"},
+    "鈴谷": {"午前": "9～12時", "午後1": "13～15時", "午後１": "13～15時", "午後2": "15～17時", "午後２": "15～17時", "夜間": "18～21時"},
+    "駒場": {"9～": "9～11時", "９～": "9～11時", "11～": "11～13時", "１１～": "11～13時",
+             "13～": "13～15時", "１３～": "13～15時",
+             "15～": "15～17時", "１５～": "15～17時",
+             "17～": "17～19時", "１７～": "17～19時",
+             "19～": "19～21時", "１９～": "19～21時"},
 }
 
 # ====== ユーティリティ ======
@@ -450,7 +412,7 @@ def locate_calendar_root(page, hint: str, facility: Dict[str, Any] = None):
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
 
-# ====== ★月移動（従来のコードそのまま＋ガード） ======
+# ====== ★月移動（従来のコード＋ガード） ======
 def _compute_next_month_text(prev: str) -> str:
     try:
         m = re.match(r"(\d{4})年(\d{1,2})月", prev or "")
@@ -1005,7 +967,7 @@ def send_aggregate_lines(webhook_url: Optional[str], facility_alias: str, month_
         return
     client.send_embed(title=title, description=description, color=color_int, footer_text="Facility monitor")
 
-# ====== ★追加：戻る／施設選択／部屋選択（既存） ======
+# ====== ★戻る／施設選択／部屋選択 ======
 def back_to_facility_list(page) -> bool:
     back_sel_month = "a[href*='gRsvWInstSrchMonthVacantBackAction']"
     with time_section("click back (month -> facility/inst list)"):
@@ -1115,7 +1077,7 @@ def apply_post_facility_steps(page, facility: Dict[str, Any]) -> None:
             except Exception as e:
                 print(f"[WARN] apply_post_facility_steps: error on '{label}': {e}", flush=True)
 
-# ====== ★ここから：時間帯抽出のための追加関数（ヘッダ検出強化） ======
+# ====== ★ここから：時間帯抽出のための追加関数 ======
 def _normalize_time_label(s: str) -> str:
     """ 全角→半角、空白除去など軽い正規化 """
     if s is None:
@@ -1143,20 +1105,61 @@ def _detect_status_in_cell(cell, config) -> Optional[str]:
             src = img.get_attribute("src") or ""
             alt_n = alt.strip()
             if alt_n:
-                if "空き" in alt_n: return "空き"
-                if "予約あり" in alt_n: return "予約あり"
+                if "空き" in alt_n:
+                    return "空き"
+                if "予約あり" in alt_n:
+                    return "予約あり"
             fname = os.path.basename(src).lower()
-            if "empty" in fname or "lw_0.gif" in fname: return "空き"
-            if "finish" in fname or "lw_100.gif" in fname: return "予約あり"
+            if "empty" in fname or "lw_0.gif" in fname:
+                return "空き"
+            if "finish" in fname or "lw_100.gif" in fname:
+                return "予約あり"
             return "その他"
     except Exception:
         pass
     try:
         t = (cell.inner_text() or "").strip()
-        if "空き" in t: return "空き"
-        if "予約あり" in t: return "予約あり"
+        if "空き" in t:
+            return "空き"
+        if "予約あり" in t:
+            return "予約あり"
     except Exception:
         pass
+    return None
+
+def _find_day_cell_in_month(page, calendar_root, day_int: int):
+    """ 月表示カレンダー内から '15日' のような当該日のセル（a/selectDay を優先）を特定 """
+    day_text = f"{day_int}日"
+    candidates = calendar_root.locator(":scope tbody td, :scope [role='gridcell'], :scope .fc-daygrid-day")
+    cnt = candidates.count()
+    for i in range(cnt):
+        el = candidates.nth(i)
+        try:
+            txt = (el.inner_text() or "")
+            if day_text in txt:
+                a = el.locator("a[href*='selectDay']").first
+                return a if a and a.count() > 0 else el
+        except Exception:
+            pass
+        try:
+            aria = el.get_attribute("aria-label") or ""
+            title = el.get_attribute("title") or ""
+            if day_text in (aria + " " + title):
+                a = el.locator("a[href*='selectDay']").first
+                return a if a and a.count() > 0 else el
+        except Exception:
+            pass
+        try:
+            imgs = el.locator("img")
+            jcnt = imgs.count()
+            for j in range(jcnt):
+                alt = imgs.nth(j).get_attribute("alt") or ""
+                tit = imgs.nth(j).get_attribute("title") or ""
+                if day_text in (alt + " " + tit):
+                    a = el.locator("a[href*='selectDay']").first
+                    return a if a and a.count() > 0 else el
+        except Exception:
+            pass
     return None
 
 def _header_patterns(month_text: Optional[str], day_int: int) -> List[re.Pattern]:
@@ -1184,7 +1187,6 @@ def _header_patterns(month_text: Optional[str], day_int: int) -> List[re.Pattern
             rf"\b{y}\s*/\s*{mo}\s*/\s*{day_int}\b",
             rf"\b{y}年\s*{mo}月\s*{day_int}日\b",
         ]
-    # コンパイル（全角/半角・改行を許容）
     return [re.compile(p) for p in pats]
 
 def _find_day_col_index_generic(table, day_int: int, month_text: Optional[str]) -> Optional[int]:
@@ -1211,11 +1213,9 @@ def _wait_timesheet_ready_for_day(page, day_int: int, month_text: Optional[str],
     deadline = time.time() + (timeout_ms / 1000.0)
     while time.time() < deadline:
         try:
-            # テーブル自体の出現
             tbl = page.locator("table.akitablelist")
             if tbl.count() > 0:
                 table = tbl.first
-                # ヘッダ候補を走査
                 ths = table.locator(":scope thead th.akitablelist, :scope thead th")
                 if ths.count() == 0:
                     ths = table.locator(":scope > tbody > tr:first-child > th.akitablelist, :scope > tbody > tr:first-child > th")
@@ -1257,7 +1257,6 @@ def _click_back_to_month(page) -> bool:
         page.screenshot(path=str(dbg / f"back_to_month_failed_{int(time.time())}.png"))
         safe_write_text(dbg / f"back_to_month_failed_{int(time.time())}.html", page.inner_html("body"))
         return False
-    # 月表示の再検知
     try:
         page.locator("table.m_akitablelist").first.wait_for(state="visible", timeout=2000)
         month_text = get_current_year_month_text(page) or "unknown"
@@ -1275,7 +1274,6 @@ def goto_day_and_collect_time_ranges(page, calendar_root, day_int: int, facility
     if not el:
         print(f"[CLICK] day={day_int}: anchor NOT FOUND (skip)", flush=True)
         return []
-    # 日セルクリック → 遷移（軽く待機）
     try:
         print(f"[CLICK] day={day_int}: target found", flush=True)
         el.scroll_into_view_if_needed()
@@ -1286,13 +1284,11 @@ def goto_day_and_collect_time_ranges(page, calendar_root, day_int: int, facility
         print(f"[CLICK] day={day_int}: FAILED", flush=True)
         return []
 
-    # ヘッダ待機（表記揺れ許容）
     if not _wait_timesheet_ready_for_day(page, day_int, month_text, timeout_ms=7000):
         print(f"[STATE] timesheet-view NOT ready for day={day_int} (header not detected) → skip", flush=True)
         _click_back_to_month(page)
         return []
 
-    # テーブル本体
     time_ranges: List[str] = []
     try:
         tbl = page.locator("table.akitablelist")
@@ -1300,7 +1296,6 @@ def goto_day_and_collect_time_ranges(page, calendar_root, day_int: int, facility
             raise RuntimeError("time-table not found")
         table = tbl.first
 
-        # 列ヘッダから当該日列を特定（表記揺れ許容）
         target_col = _find_day_col_index_generic(table, day_int, month_text)
         if target_col is None:
             print(f"[STATE] timesheet-view ready but header for day={day_int} NOT found → skip", flush=True)
@@ -1309,7 +1304,6 @@ def goto_day_and_collect_time_ranges(page, calendar_root, day_int: int, facility
 
         print(f"[STATE] timesheet-view ready: table.akitablelist visible, header for day={day_int} found (col={target_col})", flush=True)
 
-        # 各行（時間帯ラベル＝1列目）について対象列のセルを評価
         print(f"[SCAN] day={day_int}: collecting '空き' slots...", flush=True)
         rows = table.locator(":scope tbody tr")
         rcnt = rows.count()
@@ -1329,10 +1323,8 @@ def goto_day_and_collect_time_ranges(page, calendar_root, day_int: int, facility
     except Exception:
         pass
 
-    # 月表示に戻る（戻り確認まで）
     _click_back_to_month(page)
 
-    # 重複排除＆時刻順ソート
     uniq = sorted(set(time_ranges), key=lambda s: _sortkey_time_range(s))
     return uniq
 
@@ -1343,7 +1335,6 @@ def _sortkey_time_range(s: str) -> Tuple[int, int]:
     return (int(m.group(1)), int(m.group(2)))
 
 def compute_improved_days(prev_details: List[Dict[str, str]], cur_details: List[Dict[str, str]]) -> List[int]:
-    """ IMPROVE_TRANSITIONS に従い、改善した '日' の整数配列を抽出 """
     prev_map = {}
     cur_map = {}
     for d in (prev_details or []):
@@ -1365,10 +1356,6 @@ def compute_improved_days(prev_details: List[Dict[str, str]], cur_details: List[
 
 def build_time_increase_lines(page, calendar_root, facility_alias: str, month_text: str,
                               prev_details: List[Dict[str,str]], cur_details: List[Dict[str,str]], config) -> List[str]:
-    """
-    改善があった日に限り、その日の時間帯レンジ（空きのみ）を抽出して通知行を生成
-    例： "2026年1月14日(水) : 13～17時、18～21時"
-    """
     ym = _parse_month_text(month_text)
     if not ym:
         return []
@@ -1383,7 +1370,7 @@ def build_time_increase_lines(page, calendar_root, facility_alias: str, month_te
         wd = _weekday_jp(dt)
         wd_part = f"{wd}・祝" if _is_japanese_holiday(dt) else wd
         line = f"{y}年{mo}月{di}日 ({wd_part}) : " + "、".join(ranges)
-        print(f"[RESULT] {line}", flush=True)  # 生成した通知行をログ化
+        print(f"[RESULT] {line}", flush=True)
         lines.append(line)
     return lines
 
@@ -1526,7 +1513,6 @@ def run_monitor():
                     prev_month_text = month_text2
 
             except Exception as e:
-                # 例外時の証跡（元の実装＋_debugへスクショ）
                 dbg = OUTPUT_ROOT / "_debug"; safe_mkdir(dbg)
                 shot = dbg / f"exception_{alias}_{int(time.time())}.png"
                 try: page.screenshot(path=str(shot))
