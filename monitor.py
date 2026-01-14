@@ -1089,15 +1089,16 @@ def apply_post_facility_steps(page, facility: Dict[str, Any]) -> None:
     hints = facility.get("step_hints", {}) or {}
     for label in steps:
         with time_section(f"post-step: '{label}'"):
-            try:
-                # 事前アクション（スクロール等）
+            try:                      
+                # ... apply_post_facility_steps 内
                 for act in (pre.get(label) or []):
                     if isinstance(act, str) and act.startswith("SCROLL:"):
                         x_str, y_str = act.split(":",1)[1].split(",",1)
-                        page.evaluate("window.scrollTo(arguments[0], arguments[1]);",
-                                      int(x_str.strip()), int(y_str.strip()))
+                        # ★修正：evaluate は引数1個。配列で渡す
+                        page.evaluate("([x, y]) => window.scrollTo(x, y)", [int(x_str.strip()), int(y_str.strip())])
                     elif isinstance(act, str) and act.startswith("WAIT_MS:"):
                         page.wait_for_timeout(int(act.split(":",1)[1].strip()))
+
                 # セレクタ候補でクリック
                 clicked = False
                 for sel in (spec.get(label) or []):
