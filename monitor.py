@@ -1280,12 +1280,46 @@ def goto_day_and_collect_time_ranges(page, calendar_root, day_int: int, facility
         el.click(timeout=3000)
         print(f"[CLICK] day={day_int}: SUCCESS", flush=True)
         grace_pause(page, "goto day detail")
+  
+        # === 診断追加: クリック直後の画面状態確認（最小差分） ===
+        try:
+            dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
+            url_after = page.url
+            tbl = page.locator("table.akitablelist")
+            cnt = tbl.count()
+            print(f"[DEBUG] after-click url='{url_after}' timesheet_table_count={cnt}", flush=True)
+            # 証跡（常時1枚）：時間帯表示に遷移できているかを確認
+            page.screenshot(path=str(dbg / f"timesheet_after_click_day{day_int}.png"))
+            safe_write_text(dbg / f"timesheet_after_click_day{day_int}.html", page.inner_html("body"))
+        except Exception as _e:
+            print(f"[DEBUG] after-click evidence save failed: {_e}", flush=True)
+          
     except Exception:
         print(f"[CLICK] day={day_int}: FAILED", flush=True)
         return []
 
     if not _wait_timesheet_ready_for_day(page, day_int, month_text, timeout_ms=7000):
         print(f"[STATE] timesheet-view NOT ready for day={day_int} (header not detected) → skip", flush=True)
+            
+        # === 診断追加: ヘッダ未検出時のみ候補ヘッダと証跡を保存（最小差分） ===
+        try:
+            dbg = OUTPUT_ROOT / "_debug"; dbg.mkdir(parents=True, exist_ok=True)
+            # 候補ヘッダの抜粋（thead/先頭行/全thの上位5件）
+            candidates = []
+            table = page.locator("table.akitablelist").first
+            if table and table.count() > 0:
+                ths = table.locator(":scope thead th, :scope > tbody > tr:first-child > th, :scope th")
+                c = min(ths.count(), 5)
+                for i in range(c):
+                    t = (ths.nth(i).inner_text() or "").replace("\n", " ").strip()
+                    if t: candidates.append(t)
+            print(f"[DEBUG] header candidates(day={day_int}): {candidates}", flush=True)
+            # 証跡: スクリーンショットとHTML断片
+            page.screenshot(path=str(dbg / f"timesheet_not_ready_day{day_int}.png"))
+            safe_write_text(dbg / f"timesheet_not_ready_day{day_int}.html", page.inner_html("body"))
+        except Exception as _e:
+            print(f"[DEBUG] not-ready evidence save failed: {_e}", flush=True)
+
         _click_back_to_month(page)
         return []
 
